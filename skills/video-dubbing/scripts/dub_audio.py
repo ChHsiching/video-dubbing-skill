@@ -226,7 +226,7 @@ def main():
     p.add_argument("ref_txt", help="English transcript of ref_wav (Ultimate Cloning)")
     p.add_argument("dubbed_dir", help="output dir (dub.wav, _segments/, alignment-issues.md)")
     p.add_argument("--tts-backend", default="voxcpm2", choices=["voxcpm2", "indextts2"],
-                   help="TTS model (default voxcpm2 = July 2026 SOTA)")
+                   help="TTS backend (default voxcpm2 = July 2026 SOTA; indextts2 = fallback if VoxCPM2 fails)")
     p.add_argument("--no-ultimate-cloning", action="store_true",
                    help="disable Ultimate Cloning (reference audio only, no transcript)")
     p.add_argument("--device", default="cpu", help="torch device (default cpu)")

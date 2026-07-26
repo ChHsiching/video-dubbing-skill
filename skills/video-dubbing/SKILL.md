@@ -1,6 +1,6 @@
 ---
 name: video-dubbing
-description: Replace the original vocals in a video with Chinese voiceover cloned from the original speaker, preserving background music and sound effects. Use when the user wants to add a Chinese dub to a video, mentions 中配/中文配音/声音克隆/换原声, has a cooked bilingual video and wants a second release with Chinese narration, or another skill (e.g. video-cooking) hands off "video is done with subtitles, add a Chinese dub."
+description: Replace the original vocals in a video with Chinese voiceover cloned from the original speaker, preserving background music and sound effects. Use when the user wants to dub a video into Chinese — mentions dub / dubbing / 中配 / 配音 / 声音克隆 / 换原声, or has a cooked bilingual video and wants a second Chinese-narrated release, or another skill (e.g. video-cooking) hands off "video is done with subtitles, add a Chinese dub."
 ---
 
 Replace a video's original English vocals with **Chinese voiceover cloned from the original speaker**, while preserving the background music and sound effects. The result is a second release — same picture, same subtitles, same BGM, but the spoken audio is Chinese.
@@ -67,17 +67,7 @@ cook CLI, VoxCPM2, and Demucs must live in **one persistent shared Python enviro
 2. `~/.venvs/video-tools/` (the conventional shared location — same as `video-subtitle`).
 3. The system Python (if `cook`, `voxcpm`, `demucs` are already pip-installed there).
 
-If none exists, create one and install everything into it:
-
-```bash
-python -m venv ~/.venvs/video-tools
-# Install CPU torch FIRST (avoid pulling CUDA torch via voxcpm's deps):
-~/.venvs/video-tools/Scripts/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-~/.venvs/video-tools/Scripts/pip install voxcpm demucs soundfile --no-deps
-~/.venvs/video-tools/Scripts/pip install video-cook[all]
-```
-
-The `--no-deps` on voxcpm/demucs is critical: it stops pip from reinstalling CUDA torch. See REFERENCE.md for the torch SDPA bug workaround if you hit it.
+If none exists, create one (`python -m venv ~/.venvs/video-tools`) and install the dub tooling. The install order is load-bearing — CPU torch must go in first to avoid pip pulling CUDA torch via voxcpm's deps. See **[REFERENCE.md → "The CPU torch wheel sequence"](REFERENCE.md)** for the exact commands and the torch SDPA bug workaround.
 
 **0b. Always invoke cook via the shared environment's interpreter.** Resolve `<venv>/Scripts/cook.exe` (Windows) or `<venv>/bin/cook` (macOS/Linux). For the Python scripts (`dub_audio.py`, `extract_reference.py`), use the shared venv's python directly — `<venv>/Scripts/python.exe`.
 
@@ -101,9 +91,9 @@ The original audio is one mixed track (vocals + BGM + SFX). Demucs splits it so 
 cook dub separate <output-root> <name> [--model htdemucs_ft]
 ```
 
-Runs Demucs `htdemucs_ft` with `--two-stems=vocals` — produces `vocals.wav` (the original speaker) and `no_vocals.wav` (everything else). `htdemucs_ft` (fine-tuned) is the quality choice; on a technical-talk video it crosses the human-perception threshold (SDR ~9dB) so the separation is essentially inaudible. CPU runs at ~1.5× audio duration; a 30-min video takes ~45 min.
+Runs Demucs `htdemucs_ft` with `--two-stems=vocals` → `vocals.wav` (the original speaker) + `no_vocals.wav` (BGM + SFX). Quality rationale and the faster `htdemucs` fallback are in REFERENCE.md. CPU runs at ~1.5× audio duration; a 30-min video takes ~45 min.
 
-For long videos, `cook dub separate` auto-detaches (returns a JSON object with `pid`, `log`, `done_marker`; poll the log file). Don't chunk — Demucs handles long audio internally; chunking introduces boundary artifacts.
+For long videos, `cook dub separate` auto-detaches (returns a JSON object with `pid`, `log`, `done_marker`; poll the log file). Process the whole file in one call — Demucs handles long audio internally; slicing introduces boundary artifacts.
 
 Done when `dubbed/vocals.wav` AND `dubbed/no_vocals.wav` both exist, and `ffprobe` reports each has duration matching `raw/<name>.raw.mp4` ±0.5s. If either is missing, the separation failed — surface the Demucs log and stop.
 
@@ -121,11 +111,9 @@ Run the skill's `extract_reference.py`:
 
 The script slides across `vocals.wav`, uses ffmpeg's `silencedetect` to find a continuous speech region (no silence gaps), and picks the 8-second window with the highest steady energy. Then it transcribes that clip with whisperX (same model `video-subtitle` used, `large-v3`) → `ref.txt`.
 
-You can let the agent pick the clip automatically (default), or override:
-- **Specify a time range**: "use 01:23-01:31" → the script's `--target-window` flag isn't needed; just run it and then trim manually, or pass a custom `--start`/`--end` once added.
-- **Use a custom reference**: drop a `.wav`/`.mp3` into `voices/` (skill's bundled voice samples) or any path; skip `extract_reference.py` and write your own `ref.txt` by transcribing it yourself.
+The script picks the clip automatically by default. To override, drop a `.wav`/`.mp3` into `voices/` (the skill's bundled voice samples) or pass a custom path, then transcribe it yourself and write `ref.txt` — skip `extract_reference.py` entirely.
 
-Done when `dubbed/_reference/ref.wav` exists (5-12s, 16kHz mono) AND `dubbed/_reference/ref.txt` exists with at least one full English sentence. If `ref.txt` is empty or looks like garbage (whisperX failed on a noisy clip), try a different region or a cleaner reference.
+Done when `dubbed/_reference/ref.wav` exists AND `ffprobe` reports it is 5-12s, 16kHz mono AND `dubbed/_reference/ref.txt` exists with at least one full English clause (subject + verb, ≥3 words). If `ref.txt` is empty or only contains filler ("uh", "yeah", "so"), re-run Step 2 — whisperX failed on a noisy clip and Ultimate Cloning needs an accurate transcript.
 
 ### Step 3 — Configure cloning
 
@@ -133,11 +121,11 @@ Use `AskUserQuestion` to confirm three things in one shot — don't ask them one
 
 1. **Reference source**: the auto-extracted `ref.wav` (default, recommended) / a file in `voices/` / a custom path the user provides.
 2. **Ultimate Cloning**: on (default — uses both ref.wav + ref.txt) / off (audio-only cloning, faster but less faithful).
-3. **TTS backend**: VoxCPM2 (default, July 2026 SOTA for zero-shot cloning) / IndexTTS2 (if VoxCPM2 fails to install on this machine — see REFERENCE.md) / GPT-SoVITS (if both fail, last-resort CPU-friendly option).
+3. **TTS backend**: VoxCPM2 (default, July 2026 SOTA for zero-shot cloning) / IndexTTS2 (fallback only if VoxCPM2 fails to install — see REFERENCE.md).
 
-The defaults are right 90% of the time. Only the reference source warrants asking — if the auto-extracted clip sounds wrong to the user (they'll hear it in the final), they'll come back and pick a different one. Recording the answers here lets Step 4 run without further interruption.
+The defaults are right 90% of the time. Only the reference source warrants asking — if the auto-extracted clip sounds wrong to the user (they'll hear it in the final), they'll come back and pick a different one.
 
-Done when you have `ref_wav_path`, `ultimate` (bool), and `tts_backend` recorded to pass to Step 4.
+Done when `ref_wav_path` points to an existing file, `ultimate` is a bool, and `tts_backend` is one of `{voxcpm2, indextts2}` (the only backends `dub_audio.py` actually supports).
 
 ### Step 4 — Synthesize the Chinese dub (the slow step)
 
@@ -155,7 +143,7 @@ Read `<output-root>/transcript/<name>.zh.srt` (the dub script with original time
 What `dub_audio.py` does, per cue:
 
 1. **Synthesize** the Chinese text via VoxCPM2 with Ultimate Cloning (`prompt_wav_path` + `prompt_text` + `reference_wav_path`).
-2. **Time-align** via ffmpeg `atempo`: stretch the cue's natural duration to fit the original SRT cue's window. Capped at ±25% (1.25× / 0.8×) — beyond that the voice sounds chipmunked or drugged. Cues that exceed the cap are logged to `dubbed/alignment-issues.md` with their natural vs. target duration, for your later review.
+2. **Time-align** via ffmpeg `atempo`: stretch the cue's natural duration to fit the original SRT cue's window. Capped at ±25% (the natural-speech limit — see REFERENCE.md for why). Cues that would exceed the cap are capped at the limit and logged to `dubbed/alignment-issues.md` for your review.
 3. **Place on timeline**: pad silence up to each cue's start offset, then mix down to `dub.wav` matching the original video's total duration.
 
 The model loads once and is reused for every cue (loading VoxCPM2 is the expensive part). Cues are cached in `dubbed/_segments/sent_NNNN_<hash>.wav` keyed by `(backend, ultimate, text)` — so changing the reference or the backend invalidates the cache correctly, but re-running after a single cue's text was fixed only re-synthesizes that cue.
@@ -175,11 +163,11 @@ cook dub mix <output-root> <name> [--bg-gain -18]
 ```
 
 The mix:
-- Takes `dubbed/no_vocals.wav` (original BGM + SFX) at the configured gain (default -18dB — audible but not competing with the dub).
+- Takes `dubbed/no_vocals.wav` (original BGM + SFX) at the configured gain (default -18dB — the "ducking" level: BGM is present during silence but the dub wins when the speaker talks).
 - Takes `dubbed/dub.wav` (Chinese vocals) at full volume.
 - Muxes onto the video's picture (from `cooked/<name>.cooked.mp4` — so the burned subtitles survive).
 
-The default -18dB background is the "ducking" level — BGM is present during silence but the dub wins when the speaker talks. For music-heavy videos where BGM matters more, raise to -12dB. For pure-talk videos, lower to -24dB or use the original `raw/<name>.raw.mp4`'s picture (no subs) if you want a clean undubbed-but-subtitled alternate.
+The default -18dB works for most videos. For music-heavy or pure-talk sources, see REFERENCE.md's "Background-gain choices" table.
 
 Done when `dubbed/<name>.dubbed.mp4` exists AND `ffprobe` reports duration matching the raw AND a spot-check at a speaking timestamp plays the Chinese dub.
 
@@ -203,4 +191,4 @@ Done when `cook dub verify` exits 0. The run is not done until this passes.
 
 The following details are pushed out of this file because they're consulted on demand, not every run. Load them when the situation calls for it:
 
-- **[REFERENCE.md](REFERENCE.md)** — VoxCPM2 install details (CPU torch wheel sequence, the torch SDPA bug and its two fixes, model download via ModelScope vs HuggingFace), Demucs raw commands (when `cook dub separate` isn't available), the full ffmpeg mix/mux command (background gain, sidechain-compress ducking alternative), the time-alignment engineering notes (why ±25%, what to do with over-long cues, why we don't use IndexTTS2's `target_dur`), VoxCPM2 Ultimate Cloning internals, the fallback TTS backends (IndexTTS2, GPT-SoVITS — when to reach for them), and the Chinese-dub quality self-check (洋腔 / mis-readings / fragmentation).
+- **[REFERENCE.md](REFERENCE.md)** — VoxCPM2 install details (CPU torch wheel sequence, the torch SDPA bug and its two fixes, model download via ModelScope vs HuggingFace), Demucs raw commands (when `cook dub separate` isn't available), the full ffmpeg mix/mux command (background gain, sidechain-compress ducking alternative), the time-alignment engineering notes (why ±25%, what to do with over-long cues, why we don't use IndexTTS2's `target_dur`), VoxCPM2 Ultimate Cloning internals, the IndexTTS2 fallback backend, and the Chinese-dub quality self-check (洋腔 / mis-readings / fragmentation).

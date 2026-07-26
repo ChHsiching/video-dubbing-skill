@@ -25,8 +25,9 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 # 2. Then install voxcpm WITHOUT its torch dependency:
 pip install voxcpm demucs soundfile --no-deps
 
-# 3. Verify voxcpm's other deps are present:
-pip install numpy scipy soundfile transformers accelerate
+# 3. voxcpm's remaining deps + the cook CLI (also pulls whisperX, used by Step 2):
+pip install numpy scipy transformers accelerate
+pip install video-cook[all]
 ```
 
 If you skip step 1 and let voxcpm pull torch itself, you'll get CUDA torch that doesn't work on your AMD GPU and wastes disk. If you skip `--no-deps` in step 2, pip will try to "fix" the missing CUDA torch by reinstalling it.
@@ -190,9 +191,9 @@ If `alignment-issues.md` flags many cues as `too_long_capped`, the dub will have
 2. **Accept the speed-up** for those cues if they're rare and the content allows it (a fast-talking speaker is less jarring than you'd think, if the original was also fast).
 3. **Extend the cue's time window** by stealing time from adjacent silence. More complex; rarely worth it.
 
-## Fallback TTS backends
+## Fallback TTS backend
 
-dub_audio.py supports `--tts-backend indextts2` and (future) `--tts-backend gptsovits` for when VoxCPM2 won't install or produces poor results on your hardware.
+dub_audio.py supports `--tts-backend indextts2` as a fallback when VoxCPM2 won't install or produces poor results on your hardware. (A GPT-SoVITS backend is planned but not implemented — do not offer it to the user.)
 
 ### IndexTTS2 (`--tts-backend indextts2`)
 
@@ -200,12 +201,6 @@ dub_audio.py supports `--tts-backend indextts2` and (future) `--tts-backend gpts
 - Set `INDEXTTS_DIR` env var to the install path; dub_audio.py's `IndexTTS2Backend` reads it.
 - Lower cloning quality than VoxCPM2 (SS 76.5 vs 79.5), no Ultimate Cloning mode (reference audio only), slower on CPU.
 - Use only if VoxCPM2 fails to install. License note: IndexTTS2's model weights require written permission from bilibili for commercial use — fine for personal, problematic if you're publishing commercially.
-
-### GPT-SoVITS (not yet wired in)
-
-- The most CPU-friendly option ([official `--Device CPU` install path](https://github.com/RVC-Boss/GPT-SoVITS), RTF 0.526 on Apple M4, MIT license).
-- Strongest when you can do 1-minute fine-tuning on the reference speaker (not pure zero-shot).
-- If you need this backend, extend dub_audio.py with a `GPTSoVITSBackend` class following the same interface. Pull requests welcome.
 
 ## Chinese-dub quality self-check
 
