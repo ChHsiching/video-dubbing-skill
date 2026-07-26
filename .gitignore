@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Models (huge, downloaded on first run — don't commit)
+*.bin
+*.pt
+*.pth
+*.gguf
+*.onnx
+models/
+pretrained_models/
+
+# Working files produced by the pipeline — never commit media or outputs
+*.wav
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+*.m4a
+*.aac
+*.flac
+*.opus
+*.dubbed.*
+*.srt
+*.ass
+*.txt.tmp
+alignment-issues.md
+dub.log
+dub.err.log
+test_output/
+/tmp/
+
+# Reference voice samples shipped with the skill — keep these
+!voices/*.mp3
+!voices/*.wav
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,5 @@
+cook>=0.1.0
+voxcpm>=2.0.0
+demucs>=4.0.0
+torch>=2.5.1
+soundfile
