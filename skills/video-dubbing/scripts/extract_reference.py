@@ -193,12 +193,12 @@ def main():
     )
     p.add_argument("vocals_wav", help="path to separated vocals.wav (from cook dub separate)")
     p.add_argument("reference_dir", help="output dir for ref.wav + ref.txt")
-    p.add_argument("--target-duration", type=float, default=8.0,
-                   help="preferred clip length in seconds (default 8)")
+    p.add_argument("--target-duration", type=float, default=16.0,
+                   help="preferred clip length in seconds (default 16; VoxCPM2 docs recommend 10-20s)")
     p.add_argument("--min-duration", type=float, default=5.0,
                    help="minimum acceptable clip length (default 5)")
-    p.add_argument("--max-duration", type=float, default=12.0,
-                   help="maximum clip length (default 12)")
+    p.add_argument("--max-duration", type=float, default=20.0,
+                   help="maximum clip length (default 20)")
     p.add_argument("--whisper-model", default="large-v3",
                    help="whisperX model for the transcript (default large-v3)")
     p.add_argument("--language", default="en",
@@ -215,10 +215,15 @@ def main():
     )
     print(f"[1/3] picked clip {start:.2f}s - {end:.2f}s ({end-start:.2f}s)", flush=True)
 
-    # Extract it as 16kHz mono wav (VoxCPM2 expects clean reference)
+    # Extract it as 16kHz mono wav with 0.5s silence padding at head and tail.
+    # VoxCPM2's Ultimate Cloning has a known tail-leak bug (Issue #200) where
+    # the last 100-200ms of the reference bleeds into generated audio; the
+    # padding makes the tail silent so any leak is silent. The head padding
+    # gives the model a clean onset anchor.
     subprocess.run(
         ["ffmpeg", "-y", "-i", args.vocals_wav,
          "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
+         "-af", "adelay=500|500,apad=pad_dur=0.5",
          "-ar", "16000", "-ac", "1", ref_wav],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
