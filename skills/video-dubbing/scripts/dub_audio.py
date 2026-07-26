@@ -136,17 +136,12 @@ class VoxCPM2Backend(TTSBackend):
 
     def load(self, ref_wav, ref_txt, ultimate, device):
         from voxcpm import VoxCPM  # lazy import — heavy
-        self.model = VoxCPM.from_pretrained("openbmb/VoxCPM2", load_denoiser=False)
-        # VoxCPM.from_pretrained takes device via the model's internal resolution
-        # when not CUDA. Pass device explicitly to force CPU on non-CUDA hosts.
-        # The pip package resolves device at construction; if you hit the
-        # torch SDPA IndexError on CPU, see REFERENCE.md — use source install
-        # or downgrade torch to 2.5.1.
-        if device == "cpu":
-            try:
-                self.model = self.model.to("cpu")
-            except Exception:
-                pass  # already on cpu or .to() not exposed
+        # from_pretrained takes device directly — pass "cpu" explicitly on
+        # non-CUDA hosts. If you hit the torch SDPA IndexError on CPU, see
+        # REFERENCE.md — use source install or downgrade torch to 2.5.1.
+        self.model = VoxCPM.from_pretrained(
+            "openbmb/VoxCPM2", load_denoiser=False, device=device,
+        )
         self.ref_wav = ref_wav
         self.ref_txt = ref_txt
         self.ultimate = ultimate
