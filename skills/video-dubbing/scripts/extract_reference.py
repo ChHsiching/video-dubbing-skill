@@ -89,9 +89,15 @@ def _build_speech_regions(starts: list[float], ends: list[float]) -> list[tuple[
 
 def pick_best_clip(vocals_path: str, target_dur: float, min_dur: float,
                    max_dur: float) -> tuple[float, float]:
-    """Find the best [start, end] window: a continuous speech region at least
-    min_dur long, preferring ones close to target_dur. Falls back to the
-    longest speech region if none hits the target."""
+    """Find the best [start, end] window: the LONGEST continuous speech region
+    available (capped at max_dur). Long regions correlate with connected,
+    fast-paced speech without pauses — and VoxCPM2's Ultimate Cloning mimics
+    the reference's speaking rate, so a fast/connected reference yields
+    fast/connected Chinese (A/B test: same sentence was 13.9s with a slow
+    reference vs 4.0s with a connected one — 3.48x difference).
+
+    Ties broken by earliness (intro/early segments tend to be cleaner takes).
+    """
     total = get_duration(vocals_path)
     regions, last_speech_end = detect_speech_regions(vocals_path)
     if last_speech_end < total:
@@ -104,16 +110,14 @@ def pick_best_clip(vocals_path: str, target_dur: float, min_dur: float,
         mid = total / 2
         return (max(0, mid - target_dur / 2), min(total, mid + target_dur / 2))
 
-    # Score each: prefer duration close to target, prefer earlier (intro
-    # usually has clearer speech than late-video asides)
-    def score(r):
-        s, e = r
-        dur = e - s
-        if dur > max_dur:
-            dur = max_dur  # we'll trim anyway
-        dur_penalty = abs(dur - target_dur) / target_dur
-        earliness_bonus = -s / total * 0.1  # tiny preference for earlier
-        return dur_penalty + earliness_bonus
+    # Pick the longest region; break ties by earliest (intro is usually cleaner)
+    candidates.sort(key=lambda r: (-(r[1] - r[0]), r[0]))
+    best_start, best_end = candidates[0]
+
+    # Cap at max_dur, keeping the start (earlier = cleaner take typically)
+    if best_end - best_start > max_dur:
+        best_end = best_start + max_dur
+    return (best_start, best_end)
 
     best = min(candidates, key=score)
     s, e = best

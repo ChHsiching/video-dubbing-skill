@@ -225,8 +225,6 @@ def main():
     p.add_argument("--no-ultimate-cloning", action="store_true",
                    help="disable Ultimate Cloning (reference audio only, no transcript)")
     p.add_argument("--device", default="cpu", help="torch device (default cpu)")
-    p.add_argument("--max-stretch", type=float, default=1.25,
-                   help="max atempo ratio per cue (default 1.25 = ±25%%, beyond this sounds off)")
     args = p.parse_args()
 
     os.makedirs(args.dubbed_dir, exist_ok=True)
@@ -272,38 +270,36 @@ def main():
         print(f"    cue {cue.index:04d}: {dur:.2f}s ({time.time()-t1:.1f}s wall)  '{cue.text[:40]}'", flush=True)
         seg_files.append((cue, out))
 
-    # Time-align each cue to its SRT window via atempo, then place on a silent
-    # track at the cue's start time. Cues that can't fit (>max_stretch) are
-    # logged for manual review.
-    print(f"\n[4/5] aligning cues to timeline + placing on dub track...", flush=True)
+    # Time-align each cue to its SRT window. Each cue occupies its own window
+    # [cue.start, cue.end] — they are placed serially, never overlapping.
+    # If the natural TTS duration exceeds the window, the cue is sped up via
+    # atempo to fit exactly (no upper bound on speed — the goal is no overlap,
+    # not naturalness at the cost of audio pile-up). Cues shorter than their
+    # window keep their natural duration; the rest of the window stays silent.
+    print(f"\n[4/5] aligning cues to timeline (serial, no overlap)...", flush=True)
     issues = []
     aligned_segs = []  # (start_offset, aligned_wav_path)
     for cue, seg in seg_files:
         natural_dur = get_wav_duration(seg)
-        target_dur = max(0.3, cue.end - cue.start)
-        ratio = natural_dur / target_dur
+        window_dur = max(0.3, cue.end - cue.start)
         aligned = os.path.join(seg_dir, f"aligned_{cue.index:04d}.wav")
-        if ratio > args.max_stretch:
-            # too long even at max speed — cap at max_stretch and log it
-            cap_ratio = args.max_stretch
+        if natural_dur > window_dur:
+            # Speed up to fit the window exactly. No cap — overlap is worse
+            # than fast speech (a viewer can follow 1.5x, but two cues at
+            # once is unintelligible). Log anything above 1.5x for review.
+            speed = natural_dur / window_dur
             subprocess.run(
-                ["ffmpeg", "-y", "-i", seg, "-filter:a", ",".join(atempo_factor(cap_ratio)),
+                ["ffmpeg", "-y", "-i", seg, "-filter:a", ",".join(atempo_factor(speed)),
                  "-ar", "22050", "-ac", "1", aligned],
                 check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-            final_dur = get_wav_duration(aligned)
-            issues.append((cue.index, cue.text, natural_dur, target_dur, final_dur, "too_long_capped"))
-        elif ratio < 1.0 / args.max_stretch:
-            # too short — keep natural duration (don't slow down unnaturally)
+            if speed > 1.5:
+                issues.append((cue.index, cue.text, natural_dur, window_dur,
+                               get_wav_duration(aligned), f"sped_up_{speed:.2f}x"))
+        else:
+            # Fits naturally — keep as-is, the window padding handles the rest.
             subprocess.run(
                 ["ffmpeg", "-y", "-i", seg, "-ar", "22050", "-ac", "1", aligned],
-                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            issues.append((cue.index, cue.text, natural_dur, target_dur, get_wav_duration(aligned), "too_short_kept"))
-        else:
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", seg, "-filter:a", ",".join(atempo_factor(ratio)),
-                 "-ar", "22050", "-ac", "1", aligned],
                 check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
         aligned_segs.append((cue.start, aligned))
@@ -345,27 +341,62 @@ def _write_silence(path: str, duration: float) -> None:
 
 def _build_timeline(segments: list[tuple[float, str]], out_path: str,
                     total_duration: float) -> None:
-    """Place each aligned segment at its start offset on a silent track.
-    segments: list of (start_seconds, wav_path)."""
+    """Build the dub track by serial concatenation — each segment padded with
+    silence before it (to reach its start offset) and after it (to reach the
+    next segment's start), then all concatenated in order.
+
+    This guarantees NO overlap between cues: each cue occupies exactly
+    [start, start+duration] on the timeline, with silence filling any gap
+    before the next cue. The previous adelay+amix approach summed overlapping
+    cues; this concat approach cannot."""
     if not segments:
         _write_silence(out_path, total_duration)
         return
-    # Build a filter_complex: for each segment, delay it by its start offset
-    # (in ms), then mixdown all. Simpler: use adelay + amix.
-    inputs = []
-    for _, wav in segments:
-        inputs.extend(["-i", wav])
-    # adelay takes ms; amix normalizes by input count (we want sum, so use
-    # dropout=0 via volume=1 after mix, or just amix=inputs=N:duration=longest)
-    filter_parts = []
-    for i, (start, _) in enumerate(segments):
-        delay_ms = int(start * 1000)
-        filter_parts.append(f"[{i}:a]adelay={delay_ms}|{delay_ms}[d{i}]")
-    mix_inputs = "".join(f"[d{i}]" for i in range(len(segments)))
-    filter_str = ";".join(filter_parts) + f";{mix_inputs}amix=inputs={len(segments)}:duration=longest:normalize=0[out]"
+
+    # For each segment, prepend silence to reach its start offset (relative to
+    # the previous segment's end), then write as a padded segment file.
+    padded_files = []
+    cursor = 0.0  # where the previous segment ended on the timeline
+    for i, (start, wav) in enumerate(segments):
+        seg_dur = get_wav_duration(wav)
+        gap_before = max(0.0, start - cursor)
+        padded = wav.replace(f"aligned_{i:04d}", f"padded_{i:04d}") \
+            if f"aligned_{i:04d}" in wav else \
+            os.path.join(os.path.dirname(wav), f"padded_{i:04d}.wav")
+        # Build: silence(gap_before) + wav, normalize to 22050 mono
+        if gap_before > 0.001:
+            subprocess.run(
+                ["ffmpeg", "-y",
+                 "-f", "lavfi", "-t", f"{gap_before:.3f}", "-i", "anullsrc=r=22050:cl=mono",
+                 "-i", wav,
+                 "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[out]",
+                 "-map", "[out]", "-ar", "22050", "-ac", "1", padded],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        else:
+            # No gap — just normalize
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", wav, "-ar", "22050", "-ac", "1", padded],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        padded_files.append(padded)
+        cursor = start + seg_dur
+
+    # Concat all padded segments, then pad silence to total_duration
+    concat_list = os.path.join(os.path.dirname(out_path), "_segments", "_concat_list.txt")
+    with open(concat_list, "w", encoding="utf-8") as f:
+        for pf in padded_files:
+            f.write(f"file '{pf}'\n")
+    # Final: concat all + pad to total_duration
+    tail_silence = max(0.0, total_duration - cursor)
+    if tail_silence > 0.001:
+        tail_file = os.path.join(os.path.dirname(out_path), "_segments", "_tail_silence.wav")
+        _write_silence(tail_file, tail_silence)
+        with open(concat_list, "a", encoding="utf-8") as f:
+            f.write(f"file '{tail_file}'\n")
     subprocess.run(
-        ["ffmpeg", "-y", *inputs, "-filter_complex", filter_str, "-map", "[out]",
-         "-t", f"{total_duration:.2f}", "-ar", "22050", "-ac", "1", out_path],
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
+         "-ar", "22050", "-ac", "1", out_path],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
