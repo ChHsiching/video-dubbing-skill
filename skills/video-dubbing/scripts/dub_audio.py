@@ -6,7 +6,7 @@ a Chinese dub track aligned to the original SRT timeline.
 
 Usage:
     python dub_audio.py <zh.srt> <ref.wav> <ref.txt> <dubbed_dir>
-        [--target-window] [--no-ultimate-cloning] [--device cpu]
+        [--no-ultimate-cloning] [--device cpu]
         [--tts-backend voxcpm2|indextts2]
 
 Per-cue synthesis (one cue = one SRT entry). Each cue is time-aligned to its
@@ -22,7 +22,7 @@ Outputs:
 The TTS backend is pluggable. VoxCPM2 (default) is the open-source SOTA for
 zero-shot voice cloning as of July 2026; its Ultimate Cloning mode (passing
 both reference audio AND its transcript) is what makes the dub sound like the
-original speaker. See REFERENCE.md for the IndexTTS2 / GPT-SoVITS fallbacks.
+original speaker. See REFERENCE.md for the IndexTTS2 fallback.
 """
 from __future__ import annotations
 
@@ -245,13 +245,15 @@ def main():
     backend.load(args.ref_wav, args.ref_txt, ultimate, args.device)
     print(f"    loaded in {time.time()-t0:.1f}s", flush=True)
 
-    # Synthesize each cue. Cache by (backend, ultimate, text) hash so changing
-    # the reference or the TTS model invalidates the cache correctly.
+    # Synthesize each cue. Cache by (backend, ultimate, ref_wav, text) hash so
+    # changing the reference, the backend, or the ultimate toggle invalidates
+    # the cache correctly — but re-running after a single cue's text was fixed
+    # only re-synthesizes that cue.
     print(f"\n[3/5] synthesizing {len(cues)} cues (CPU is slow — this is the long step)...", flush=True)
     seg_files = []
     for cue in cues:
         cache_key = hashlib.md5(
-            f"{args.tts_backend}|{ultimate}|{cue.text}".encode("utf-8")
+            f"{args.tts_backend}|{ultimate}|{args.ref_wav}|{cue.text}".encode("utf-8")
         ).hexdigest()[:12]
         out = os.path.join(seg_dir, f"sent_{cue.index:04d}_{cache_key}.wav")
         if os.path.exists(out) and os.path.getsize(out) > 1000:
