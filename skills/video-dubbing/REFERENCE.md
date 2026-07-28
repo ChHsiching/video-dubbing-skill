@@ -1,214 +1,210 @@
-# REFERENCE — video-dubbing
+# video-dubbing — REFERENCE
 
-Loaded on demand from `SKILL.md` when the situation calls for it. The main skill file is the pipeline skeleton; this file holds the details you consult only when something needs explaining, when `cook dub` isn't available, or when VoxCPM2 misbehaves on your machine.
+Load this when the situation calls for it. The SKILL.md is the primary tier; this holds what's consulted on demand.
 
-## Why this skill exists alongside `video-subtitle`
+## IndexTTS2 — install and the single-thread constraint
 
-`video-subtitle` produces a **bilingual subtitled** release — the original English audio survives, the Chinese is only in the subtitles. That serves viewers who can read Chinese but want to hear the original speaker's tone and emphasis.
+### Why IndexTTS2, not VoxCPM2 or 豆包 API
 
-This skill produces a **Chinese-dubbed** release — the original English vocals are replaced with Chinese voiceover cloned from the same speaker. That serves viewers who want to listen in Chinese without reading subtitles (e.g. background listening, accessibility, broader reach on Chinese platforms).
+Tested three engines on the same 11-minute Matt Pocock video (English source, Chinese dub):
 
-The two releases are complementary, not alternatives. `video-cooking` produces both when the user asks for "连中配一起做".
+| Engine | 洋腔 (foreign accent) | Tail leakage | Install | Speed (CPU) | Verdict |
+|---|---|---|---|---|---|
+| **IndexTTS2** | almost none ("还行") | none | local clone + venv | RTF ~30-36 | **chosen** |
+| VoxCPM2 (Ultimate Cloning) | severe ("像日本人发不出 r 音") | severe (continues into next sentence: "and...") | pip, heavy | RTF ~1-2 | rejected |
+| 豆包 voice-clone 2.0 API | severe ("太垃圾了") | none | API key, fast | RTF ~0.02 (API) | rejected, code kept as fallback |
 
-## VoxCPM2 — install details (CPU, non-NVIDIA hardware)
+VoxCPM2's leakage is architectural — its continuation model naturally "keeps talking" after the input text, leaking the reference audio's next sentence. No post-processing fixes it. 豆包's accent comes from cross-language cloning: an English reference produces Chinese with English phonetic habits. IndexTTS2 (B站开源, large Chinese training corpus) avoids both.
 
-VoxCPM2 ([openbmb/VoxCPM2](https://github.com/OpenBMB/VoxCPM), 2B params, released April 2026) is the open-source SOTA for zero-shot Chinese voice cloning as of July 2026: Chinese CER 0.97%, speaker similarity 79.5% (highest among open models), Apache 2.0, native `--device cpu` support, near-realtime on a Zen-architecture CPU (RTF ~1.0-1.9 in community benchmarks).
+### The single-thread constraint (load-bearing)
 
-### The CPU torch wheel sequence (the critical install detail)
+IndexTTS2 **must** run single-threaded. Multi-threaded inference produces 0.05s truncated garbage audio. Root cause: `SeamlessM4TFeatureExtrator`'s FFT has a float-reduction non-determinism under multi-threading (Issue #679). The fix:
 
-`pip install voxcpm` will pull **CUDA torch** as a dependency by default — which fails to actually use CUDA on AMD/Intel hardware and wastes ~2GB of disk. The correct sequence on a non-NVIDIA machine:
+```python
+import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
-```bash
-# 1. Install CPU torch FIRST (small, ~200MB):
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+import torch
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
 
-# 2. Then install voxcpm WITHOUT its torch dependency:
-pip install voxcpm demucs soundfile --no-deps
-
-# 3. voxcpm's remaining deps + the cook CLI (also pulls whisperX, used by Step 2):
-pip install numpy scipy transformers accelerate
-pip install video-cook[all]
+# NOW import indextts
+from indextts.infer_v2 import IndexTTS2
 ```
 
-If you skip step 1 and let voxcpm pull torch itself, you'll get CUDA torch that doesn't work on your AMD GPU and wastes disk. If you skip `--no-deps` in step 2, pip will try to "fix" the missing CUDA torch by reinstalling it.
+**Order matters**: the env vars must be set before any numerical library imports. Setting them after torch loads has no effect. Every script in `scripts/` does this at the top.
 
-### The torch SDPA bug (the most common CPU failure)
+Cost: RTF jumps from ~5 (multi-thread, broken) to ~30-36 (single-thread, correct). A 141-cue video takes ~7 hours on a Ryzen CPU. This is unavoidable — there is no "fast and correct" mode.
 
-On torch ≥ 2.6 with CPU, VoxCPM2's use of `torch.nn.functional.scaled_dot_product_attention` hits an `IndexError` due to a 1D attention mask + GQA interaction (PyTorch issue [#163597](https://github.com/pytorch/pytorch/issues/163597)). Symptoms: the model loads but the first `generate()` call crashes with an `IndexError` mentioning SDPA or attention mask shape.
-
-**Three fixes, in order of preference:**
-
-1. **Use source install** (the patches are merged into `main` but lag behind the pip release):
-   ```bash
-   git clone https://github.com/OpenBMB/VoxCPM.git
-   cd VoxCPM
-   pip install -e .
-   ```
-   This pulls the fix that reshapes the mask to 4D before SDPA. Tracked in [Issue #71](https://github.com/OpenBMB/VoxCPM/issues/71).
-
-2. **Downgrade torch to 2.5.1** (the bug was introduced in 2.6):
-   ```bash
-   pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
-   ```
-
-3. **Use the ONNX backend** (community export, [DakeQQ/Text-to-Speech-TTS-ONNX](https://github.com/DakeQQ/Text-to-Speech-TTS-ONNX)) — runs via ONNX Runtime's CPUExecutionProvider, sidesteps the torch bug entirely. Slower but bulletproof.
-
-If you see Windows users reporting this in [Issue #256](https://github.com/OpenBMB/VoxCPM/issues/256) or [#286](https://github.com/OpenBMB/VoxCPM/issues/286), the source-install fix is confirmed working.
-
-### Model download (HuggingFace vs ModelScope)
-
-`VoxCPM.from_pretrained("openbmb/VoxCPM2")` auto-downloads from HuggingFace on first call (~5-8GB). If HuggingFace is slow or blocked in your region, use ModelScope:
+### Install
 
 ```bash
-pip install modelscope
-python -c "from modelscope import snapshot_download; snapshot_download('OpenBMB/VoxCPM2', local_dir='./pretrained_models/VoxCPM2')"
+git clone https://github.com/index-tts/index-tts.git ~/Git/index-tts
+cd ~/Git/index-tts
+python -m venv .venv
+.venv/Scripts/pip install -r requirements.txt
+# models land in checkpoints/ — first inference downloads them (~3GB)
 ```
 
-Then pass the local path: `VoxCPM.from_pretrained("./pretrained_models/VoxCPM2")`.
+Verify single-thread inference works:
+```bash
+.venv/Scripts/python -c "import os; os.environ['OMP_NUM_THREADS']='1'; import torch; torch.set_num_threads(1); from indextts.infer_v2 import IndexTTS2; print('OK')"
+```
 
-### CPU inference speed (real numbers, not estimates)
+### Reference audio requirements
 
-From community benchmarks on Zen-architecture CPUs (same family as the Ryzen 9 7950X this skill was built on):
+- **14-30 seconds** of clean continuous speech (no silence gaps > 0.3s).
+- 16kHz mono WAV.
+- Extracted from Demucs-separated `vocals.wav` (not the raw mix — BGM contaminates the clone).
+- Longer than VoxCPM2's 8s because IndexTTS2 clones prosody (rhythm + intonation), which needs more material than timbre-only cloning.
+- No post-processing needed — IndexTTS2 output has no tail leakage and no trailing noise.
 
-| Source | CPU | Mode | RTF |
-|---|---|---|---|
-| [Sleeping Robots blog](https://sleepingrobots.com/dreams/voxcpm-strix-halo/) | AMD Strix Halo (Zen 5, 16 threads) | VoxCPM2 Python, 5 timesteps, short text | 1.06 |
-| Same | Same | VoxCPM2 Python, 10 timesteps | 1.58-1.93 |
-| Same | Same | VoxCPM.cpp Q8_0 GGUF | 1.66 |
-| [VoxCPM.cpp benchmark](https://github.com/bluryar/VoxCPM.cpp) | Intel i5-12600K, 8 threads | VoxCPM1.5 Q8_0 | 4.29 |
-| [Issue #256](https://github.com/OpenBMB/VoxCPM/issues/256) | Intel Core Ultra 7 255H (16 cores) | Python, warm | ~1.53 it/s |
+## Term retention list
 
-A 30-minute video dubbed on a Ryzen 9 7950X with VoxCPM2 Python typically takes 4-8 hours of wall time (hundreds of cues, each ~1-2s of TTS). Plan accordingly — run detached overnight.
+Which English terms stay English in the Chinese dub, and which become Chinese. The rule has two clauses:
 
-### Ultimate Cloning — why the transcript matters
+### Clause 1: Developer-community terms stay English
 
-VoxCPM2's standard zero-shot mode (`reference_wav_path` only) clones the timbre but treats the reference as a generic style hint. Its **Ultimate Cloning** mode (`prompt_wav_path` + `prompt_text` + `reference_wav_path`) does audio-continuation-based cloning: the model is told "here is an audio clip and exactly what it says," which lets it align phoneme-level features and preserve rhythm, emotion, and speaking-rate idiosyncrasies — not just timbre. The README's exact words: "faithfully preserving every vocal detail — timbre, rhythm, emotion, and style."
+These are how Chinese developers actually say them — translating to Chinese sounds artificial:
 
-This is why Step 2 transcribes the reference clip with whisperX rather than letting you type a transcript by hand — the transcript must match the audio exactly for Ultimate Cloning to work. A mismatched transcript degrades cloning quality below the audio-only baseline.
+`spec` `plan` `Plan mode` `spec-driven` `prototype` `Wayfinder` `grilling` `grilling skill` `grilling session` `agent` `AFK agent` `skill` `skills` `skills newsletter` `token` `compact` `QA` `ship` `production` `session` `planning session` `prototype session` `UI` `UI prototype` `ticket` `ticket types` `asset` `artifact` `stub` `branch` `throwaway branch` `throwaway route` `route` `live` `live route` `filter` `design tree` `design tools` `clear` `handoff` `reference docs` `fidelity` `state machine` `state model` `design decision` `case` `app` `copy and paste` `AI` `Agile` `Shape Up` `Ryan Singer` `tldraw` `canvas` `wireframe` `spike` `throwaway spike` `diagram` (abstract concept noun)
 
-The dub_audio.py default is Ultimate Cloning ON. Pass `--no-ultimate-cloning` only if you have reason to believe the auto-transcript is wrong (rare — whisperX large-v3 is accurate on a clean 8-second clip).
+### Clause 2: On-screen content stays English (regardless of clause 1)
+
+If the speaker references something **visible in the video** — a search term they type, a UI label, code on screen, a filename — keep it in English even if it has a standard Chinese name. The viewer sees the English on screen; the subtitle must match or they'll be confused.
+
+Examples from the Matt Pocock video:
+- **`current`** — Matt points at a UI option labeled "current" and says "I don't like these current things." Translate to 当前 and the viewer can't find what he's pointing at. **Keep `current`.**
+- **`model`** — Matt types "model" into a search box (visible) and says "let's search for model again." Translate to 模型 and the search box still shows "model." **Keep `model`.**
+- **`search diagrams`** — a UI element literally labeled "search diagrams" at the top of the screen. **Keep `search diagrams`.**
+
+The test: pause the video at that cue. Is there English text on screen that the speaker is referring to? If yes, keep it. If the term is only spoken (no on-screen text), apply clause 1.
+
+### Concepts with standard Chinese names → translate
+
+When a term has a common Chinese name AND isn't shown on screen, translate it:
+
+| English | Chinese | Why |
+|---|---|---|
+| snapshot | 快照 | standard in DB/version-control contexts |
+| picker | 选择器 | standard UI term |
+| option | 选项 | standard UI term |
+| search box | 搜索框 | standard UI term |
+| data model | 数据模型 | standard technical term |
+| front-end | 前端 | universally used in Chinese |
+| back-end | 后端 | universally used in Chinese |
+
+When unsure, ask the user with context — "this term appears at timestamp X, here's the sentence, keep English or translate?"
+
+## Bi-directional re-timing — the math
+
+### The ratio
+
+For each cue:
+```
+ratio = chinese_TTS_duration / english_window_duration
+```
+- `ratio < 1`: Chinese is shorter. The video segment gets **sped up** (compressed) to match.
+- `ratio > 1`: Chinese is longer. The video segment gets **slowed down** (stretched) to match.
+- `ratio ≈ 1`: no change.
+
+The Chinese audio is **never** atempo-stretched. Every cue plays at its natural TTS speed.
+
+### The string-of-pearls timeline (overlap-proof)
+
+Naive approaches overlap. If you place each cue at `original_start + front_padding` independently, cues that were close in the original (e.g. 0.14s gap) collide after re-timing (both expand into the same new-timeline region). The string-of-pearls construction is provably overlap-free:
+
+1. Walk the cues in order. Maintain a running `new_clock`, starting at 0.
+2. For each gap between cues: `new_clock += original_gap_duration`. (Gaps are preserved as-is — they carry the original rhythm.)
+3. For each cue: `cue.new_start = new_clock`. `cue.new_end = new_clock + chinese_TTS_duration`. `new_clock = cue.new_end`.
+
+Because `new_clock` only ever increases, and each cue's `new_end` becomes the next cue's `new_clock` baseline, **two cues cannot overlap by construction**. This is checkable: assert `cues[i].new_start >= cues[i-1].new_end` for all i.
+
+### Why re-time video, not audio
+
+The old approach (VoxCPM2 + atempo) stretched the audio to fit the window. Problems:
+- atempo > 1.3x: chipmunk voice.
+- atempo < 0.8x: drunken drawl.
+- The ±25% cap meant long Chinese cues still didn't fit, producing alignment-issues.md files full of "this cue couldn't be stretched enough."
+
+Re-timing the video instead:
+- 1.2x video speedup is invisible on talking-head footage (viewers don't notice frame-dropping at 60fps source).
+- 0.7x video slowdown is acceptable (the speaker moves a bit slower; with minterpolation it's smooth).
+- No audio artifacts ever — the TTS output is sacred.
+- The only limit is how much speedup viewers tolerate before the picture looks fast-forwarded (>1.5x is the threshold).
+
+### Expected duration change
+
+A faithful Chinese translation is typically 10-30% longer or shorter than the English, depending on the content. Technical talks (lots of English terms retained) tend to run shorter (Chinese grammar is more compact). Storytelling content runs longer (Chinese needs more syllables for the same meaning). The re-timed video will be 10-30% off the original duration — this is expected and acceptable.
+
+## minterpolate — parameter tuning and alternatives
+
+### The chosen parameters
+
+```
+minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:me=epzs:vsbmc=1
+```
+
+- `mi_mode=mci` — motion-compensated interpolation (the only mode that actually generates new frames; `blend` just averages).
+- `mc_mode=aobmc` — advanced overlapped block motion compensation (highest quality).
+- `me_mode=bidir` — bidirectional motion estimation (uses both past and future frames).
+- `me=epzs` — the motion estimation algorithm. `esa` is higher quality but 5-10x slower; `epzs` is the quality/speed sweet spot.
+- `vsbmc=1` — variable-size block motion compensation (handles local motion better than fixed blocks).
+
+### The hand-artifact limitation
+
+Optical-flow interpolation fails on **fast non-rigid motion**. The classic case: a waving hand. The hand moves too fast for the flow estimator to track, so it produces two ghosted hands (the before and after positions averaged). This is architectural — no parameter tuning fixes it.
+
+**Mitigations** (in order of preference):
+1. **Accept it** — on talking-head videos (the common case), hands are in frame briefly and the artifact is tolerable. The user has accepted this trade-off.
+2. **`mi_mode=blend`** — frame averaging produces a natural motion blur (like a camera shutter) instead of ghosting. Smoother-looking but less sharp. Use if the user objects to ghosting.
+3. **No interpolation** — pure `setpts` slowdown. The segment plays at 15-40fps effective (choppy) but has zero artifacts. Use for action footage where ghosting is unacceptable.
+
+Do **not** try `mc_mode=obmc` (lower quality than aobmc) or `vsbmc=0` (worse) thinking they reduce artifacts — they don't, they just reduce quality.
+
+### Cost
+
+Interpolated segments run at RTF ~23 on CPU. A typical 11-min video has ~90 slowed segments totaling ~7 min of output video — that's ~2.8 hours of processing. Combined with TTS (~7h), the full pipeline is ~10 hours on CPU. GPU (if available) cuts minterpolate to minutes but doesn't help IndexTTS2 (which is CPU-bound by the single-thread constraint).
 
 ## Demucs — raw commands (fallback when `cook dub separate` is missing)
 
-`cook dub separate` runs Demucs internally. If cook lacks the dub subcommand, run Demucs directly:
-
 ```bash
-demucs --two-stems=vocals -n htdemucs_ft --shifts 1 --overlap 0.5 \
-    -o <output-root>/dubbed/separated \
+python -m demucs --two-stems=vocals --name htdemucs -o <output-root>/dubbed/ \
     <output-root>/raw/<name>.raw.mp4
 ```
 
-This produces `dubbed/separated/htdemucs_ft/<name>.raw/{vocals.wav, no_vocals.wav}`. Move/rename them to `dubbed/vocals.wav` and `dubbed/no_vocals.wav` (the layout the rest of the pipeline expects).
+Use `htdemucs` (single model, ~3GB RAM). Do **not** use `htdemucs_ft` (bag of 4 models, ~20GB RAM — OOMs on 32GB machines). The `_ft` variant's quality advantage is irrelevant here — we only need clean enough vocals to extract a reference clip.
 
-Demucs `htdemucs_ft` (fine-tuned) is the quality choice — vocal SDR ~9dB on speech, crossing the human-perception threshold so the separation is essentially inaudible. The non-fine-tuned `htdemucs` is ~4× faster but ~1dB worse; use it only if `htdemucs_ft` is too slow.
+## Background music — detect before mixing
 
-### Demucs flags
-
-- `--two-stems=vocals` — produce only `vocals.wav` and `no_vocals.wav` (everything else). Don't run 4-stem or 6-stem unless you have a reason — for dubbing you only need vocals vs. not-vocals.
-- `--shifts 1` — average over 1 random shift to reduce boundary artifacts. Higher is better but slower; on CPU keep at 1.
-- `--overlap 0.5` — segment overlap, reduces chunk-boundary glitches. Default 0.25; raise to 0.5 for cleaner output at 2× slower.
-- `-d cuda` / `-d cpu` — explicit device. Auto-detects by default.
-
-### When Demucs isn't good enough
-
-For music-heavy videos (Vlog, MV, documentary with prominent score), Demucs's vocal SDR drops and BGM leaks into `vocals.wav`, which corrupts the reference clip. The absolute SOTA as of July 2026 is [Mel-Band RoFormer](https://github.com/ZFTurbo/Music-Source-Separation-Training) (vocal SDR ~11dB), but the engineering overhead (community implementation, manual weight download) isn't worth it for the typical technical-talk video. If you hit a music-heavy source, fall back to: use the original raw audio as the reference (let some BGM leak — Ultimate Cloning is robust to it) rather than chasing a cleaner separation.
-
-## ffmpeg mix/mux — raw commands (fallback when `cook dub mix` is missing)
-
-`cook dub mix <output-root> <name>` runs this ffmpeg pipeline. If cook lacks it, run ffmpeg directly:
+Not every video has BGM. Test `no_vocals.wav`'s RMS before mixing:
 
 ```bash
-# Mix: dub.wav at full volume, no_vocals.wav at -18dB, sum them
-ffmpeg -y \
-    -i <output-root>/dubbed/dub.wav \
-    -i <output-root>/dubbed/no_vocals.wav \
-    -filter_complex "[0:a]volume=1.0[dub];[1:a]volume=0.125[bg];[dub][bg]amix=inputs=2:duration=longest:normalize=0[aout]" \
-    -map "[aout]" -ac 2 -ar 44100 \
-    <output-root>/dubbed/_mixed.wav
-
-# Mux: take the video (with burned subtitles) from cooked/, replace audio
-ffmpeg -y \
-    -i <output-root>/cooked/<name>.cooked.mp4 \
-    -i <output-root>/dubbed/_mixed.wav \
-    -map 0:v -map 1:a \
-    -c:v copy -c:a aac -b:a 192k \
-    -movflags +faststart \
-    <output-root>/dubbed/<name>.dubbed.mp4
-
-rm <output-root>/dubbed/_mixed.wav
+ffmpeg -i no_vocals.wav -af volumedetect -f null - 2>&1 | grep mean_volume
 ```
 
-### Background-gain choices
+- **mean_volume < -50dB**: no BGM (pure talk video). Replace vocals entirely — don't mix. The Matt Pocock test video measured -60dB.
+- **mean_volume > -50dB**: BGM present. Mix `dub.wav` (full volume) + `no_vocals.wav` (ducked to -18dB) so the BGM is present in silence but the dub wins when the speaker talks.
 
-- `-18dB` (0.125×, default): BGM audible during silence, dub wins when speaker talks. Right for most videos.
-- `-12dB` (0.25×): BGM clearly present throughout. For music-heavy videos where BGM is part of the experience.
-- `-24dB` (0.063×): BGM barely there. For pure-talk videos where BGM is incidental.
-- `-60dB` (essentially mute): equivalent to "replace audio wholesale" — use only if BGM is distracting.
-
-### Sidechain-compress ducking (advanced alternative)
-
-For a more dynamic mix where BGM auto-ducks only while the speaker talks, use sidechain compression instead of a fixed gain:
-
-```bash
-ffmpeg -y \
-    -i <output-root>/dubbed/dub.wav \
-    -i <output-root>/dubbed/no_vocals.wav \
-    -filter_complex "[1:a][0:a]sidechaincompress=threshold=0.05:ratio=8:attack=5:release=200[bgducked];[0:a][bgducked]amix=inputs=2:duration=longest:normalize=0[aout]" \
-    -map "[aout]" ...
-```
-
-This is what professional dubbing mixes use, but it adds complexity and the threshold needs tuning per source. The fixed -18dB default is the pragmatic choice.
-
-### Audio codec notes
-
-- Output audio is AAC 192k — matches what Bilibili/YouTube/小红书 expect, and avoids the Opus-in-mp4 trap that breaks iMovie/QuickTime (same reason `video-subtitle`'s `cook burn` transcodes to AAC).
-- `-movflags +faststart` moves the moov atom to the front so the file streams instead of buffering fully. Required for web playback.
-- `-c:v copy` — no re-encode of the video (it's already burned with subtitles by `video-subtitle`). If the source cooked.mp4 has an odd codec, fall back to `-c:v libx264 -preset faster -crf 20`.
-
-## Time alignment — engineering notes
-
-### Why ±25% is the atempo limit
-
-ffmpeg's `atempo` filter changes playback speed without changing pitch. Below 1.25× speed-up and above 0.8× slow-down, the result sounds natural. Beyond those bounds, even though atempo supports 0.5-2.0 by chaining, the speech becomes noticeably chipmunked (>1.25×) or drugged (<0.8×). The 1.25× / 0.8× bounds are the empirically-validated human-perception threshold for spoken content — [TTS.ai's dubbing docs](https://tts.ai/video-dubbing/) cite the same number.
-
-The dub_audio.py default `--max-stretch 1.25` caps at this threshold. Cues that would need more stretch are instead **capped at 1.25× and logged to `alignment-issues.md`** with their natural vs. target durations. Review those manually — the fix is usually to re-translate that cue shorter in the zh.srt (the translation phase in `video-subtitle` is where length should be controlled; this skill only flags what slipped through).
-
-### Why we don't use IndexTTS2's `target_dur`
-
-IndexTTS2 has a unique feature: pass `target_dur` and it generates exactly N seconds of audio, by controlling the autoregressive token count. Sounds perfect for dubbing — except:
-
-1. **It forces unnatural pacing.** When `target_dur` is shorter than the natural reading, IndexTTS2 compresses phoneme timing, producing rushed speech. When longer, it pads with awkward pauses. Either way, the result is less natural than atempo on naturally-paced speech.
-2. **IndexTTS2 is slower on CPU than VoxCPM2** (~2.5 min per sentence in [liudon's benchmark](https://liudon.com/posts/voice-cloning-solution-comparison/) on an RTX 4090, worse on CPU).
-3. **IndexTTS2's cloning quality is below VoxCPM2.** (SS 76.5 vs 79.5 on Seed-TTS-eval.) For "sound like the original speaker," VoxCPM2 Ultimate Cloning + atempo gives a better result than IndexTTS2 + target_dur.
-
-The right answer for "the dub must fit this window" is **length-aware translation upstream** (which `video-subtitle`'s translation step already does — it keeps cues ≤42 chars and times them to the original), with atempo absorbing the residual ±25%. This skill's job is the residual absorption, not the primary length control.
-
-### What to do with over-long cues
-
-If `alignment-issues.md` flags many cues as `too_long_capped`, the dub will have those cues playing faster than natural. Three options, in order of preference:
-
-1. **Re-translate those cues shorter** in `transcript/<name>.zh.srt` (the dub script). Run `video-subtitle`'s translation step again with explicit instructions to keep those specific cues under N characters. Then re-run Step 4 — the cache means only the changed cues re-synthesize.
-2. **Accept the speed-up** for those cues if they're rare and the content allows it (a fast-talking speaker is less jarring than you'd think, if the original was also fast).
-3. **Extend the cue's time window** by stealing time from adjacent silence. More complex; rarely worth it.
-
-## Fallback TTS backend
-
-dub_audio.py supports `--tts-backend indextts2` as a fallback when VoxCPM2 won't install or produces poor results on your hardware. (A GPT-SoVITS backend is planned but not implemented — do not offer it to the user.)
-
-### IndexTTS2 (`--tts-backend indextts2`)
-
-- Already installed if you ran [`narrate-video`](https://github.com/ChHsiching/narrate-video-skill) (the sibling skill that uses IndexTTS2 for narration).
-- Set `INDEXTTS_DIR` env var to the install path; dub_audio.py's `IndexTTS2Backend` reads it.
-- Lower cloning quality than VoxCPM2 (SS 76.5 vs 79.5), no Ultimate Cloning mode (reference audio only), slower on CPU.
-- Use only if VoxCPM2 fails to install. License note: IndexTTS2's model weights require written permission from bilibili for commercial use — fine for personal, problematic if you're publishing commercially.
+The `cook dub mix` command auto-detects this — but if you're mixing manually, check first or you'll amplify silence.
 
 ## Chinese-dub quality self-check
 
-After Step 5, before declaring done, listen to a 30-second sample of `<name>.dubbed.mp4` and check for:
+After burning, listen for these failure modes:
 
-1. **洋腔 (foreign accent)** — does the Chinese sound like a native speaker, or does it have the telltale flat intonation of cross-lingual TTS? If present, the reference clip is too short or too noisy — re-run Step 2 with a longer/cleaner clip.
-2. **错字 (mis-readings)** — does the dub read every Chinese character correctly? VoxCPM2's CER is 0.97%, so rare, but technical terms and rare characters can trip it. Compare a few cues against the zh.srt text.
-3. **断句不自然 (unnatural phrasing)** — does the dub pause at natural Chinese boundaries, or mid-word? This usually means the zh.srt cue text itself is fragmented (a `video-subtitle` translation issue, not this skill's).
-4. **声音不像 (doesn't sound like the speaker)** — the most common complaint. Causes: (a) reference clip is from a different speaker (multi-speaker video), (b) reference clip has BGM bleed corrupting the clone, (c) the speaker's voice is outside VoxCPM2's training distribution. Fix: pick a different reference clip from a clearly-single-speaker section.
+- **洋腔 (foreign accent)** — the Chinese sounds like a non-native speaker. If severe, the reference audio was too English-heavy; try a different reference clip or switch engines. IndexTTS2 should have almost none.
+- **Term-translation mismatch** — the dub says "快照" but the screen shows "snapshot." This means a clause-2 term (on-screen content) was wrongly translated. Audit the term list against the video.
+- **Audio gaps** — silence where there should be speech. A cue failed to synthesize (check `_segments/` for < 1KB files) or the timeline placement is wrong (check `timeline.json` for `new_start > new_end`).
+- **Subtitle overflow** — text clipped at screen edges. The `shorten --max-zh` is too high for the font size; re-run shorten with a lower limit (try 36, then 30).
 
-If multiple issues persist, the ultimate fallback is to accept the English-audio subtitled release (`cooked/<name>.cooked.mp4`) as the primary and treat the dub as a bonus — the bilingual subtitled release is the more universally useful product.
+## Fallback: 豆包 voice-clone 2.0 API
+
+Kept in `scripts/doubao_synth.py` for cases where IndexTTS2 can't run (no CPU time, need speed). **Not recommended for Chinese dub** — cross-language cloning produces severe 洋腔. But it's 100x faster (API, RTF ~0.02) and works for prototyping.
+
+API details in the script header. Key gotchas:
+- Training uses `speaker_id: "custom_speaker_id"` + `custom_speaker_id: "<your name>"`.
+- Synthesis uses `speaker: "<your name>"` + header `X-Api-Resource-Id: seed-icl-2.0`.
+- Returns streaming JSON, one chunk per line, `data` field is base64 PCM.
+- Use `audio_params.format: "pcm"` to avoid WAV header concatenation issues.

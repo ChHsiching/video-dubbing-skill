@@ -1,75 +1,79 @@
 ---
 name: video-dubbing
-description: Replace the original vocals in a video with Chinese voiceover cloned from the original speaker, preserving background music and sound effects. Use when the user wants to dub a video into Chinese — mentions dub / dubbing / 中配 / 配音 / 声音克隆 / 换原声, or has a cooked bilingual video and wants a second Chinese-narrated release, or another skill (e.g. video-cooking) hands off "video is done with subtitles, add a Chinese dub."
+description: Replace a video's original English vocals with Chinese voiceover, then re-time the video so the picture matches the Chinese. Use when the user wants to dub a video into Chinese — mentions 中配 / 配音 / 中文配音 / 换原声, or has a cooked bilingual video and wants a second Chinese-narrated release, or another skill (e.g. video-cooking) hands off "video is done with subtitles, add a Chinese dub."
 ---
 
-Replace a video's original English vocals with **Chinese voiceover cloned from the original speaker**, while preserving the background music and sound effects. The result is a second release — same picture, same subtitles, same BGM, but the spoken audio is Chinese.
+Replace a video's original English vocals with **Chinese voiceover**, then **re-time the video** so picture stays in sync with the longer/shorter Chinese. The result is a second release — same picture, Chinese audio, Chinese subtitles burned in.
 
-This skill does the **voice cloning** (the creative part that needs judgment about reference audio and Ultimate Cloning). Deterministic execution (Demucs vocal separation, audio mixing, muxing) is handled by the [`cook`](https://github.com/ChHsiching/video-cook) CLI's `cook dub` subcommand, with this skill's `scripts/` as a fallback if cook lacks the dub command.
+This skill does the two creative parts the CLI can't: **translating for dubbing** (complete sentences, not the subtitle fragmentation) and **bi-directional re-timing** (slow down or speed up each video segment to match the Chinese audio, never stretching the audio). Deterministic execution (Demucs, ffmpeg, IndexTTS2) is handled by the [`cook`](https://github.com/ChHsiching/video-cook) CLI's `cook dub` subcommand, with this skill's `scripts/` as a fallback.
 
 ## When to reach for this skill
 
 You have a video that already has:
-- A **raw video file** (`<output-root>/raw/<name>.raw.mp4`) — the original, with English vocals + BGM + SFX mixed in one audio track.
-- A **Chinese subtitle file** (`<output-root>/transcript/<name>.zh.srt`) — the dub script, already translated with timestamps from `video-subtitle`.
+- A **raw video file** (`<output-root>/raw/<name>.raw.mp4`) — the original, with English vocals.
+- A **bilingual subtitle run** from `video-subtitle` — specifically `transcript/<name>.en.full.srt` (the full-sentence English transcript, merged from whisperX fragments) and `transcript/translations.txt`.
 
-You want a Chinese-dubbed release. If you don't have these two files yet, run `video-download` then `video-subtitle` first — this skill reads their outputs.
+You want a Chinese-dubbed release. If you don't have these yet, run `video-download` then `video-subtitle` first — this skill reads their outputs.
 
 ## What you produce
 
-A new `dubbed/` stage folder added to the video's output directory (alongside the existing `raw/`, `transcript/`, `cooked/`):
+A new `dubbed/` stage folder added to the video's output directory, plus the final burned video in `cooked/`:
 
-1. `dubbed/_reference/ref.wav` — 5-10s clean clip of the original speaker (voice-cloning reference)
-2. `dubbed/_reference/ref.txt` — English transcript of ref.wav (enables VoxCPM2 Ultimate Cloning)
-3. `dubbed/vocals.wav` — original vocals, separated by Demucs (used for the reference + as the "what to replace" map)
-4. `dubbed/no_vocals.wav` — original BGM + SFX (kept, only vocals are replaced)
-5. `dubbed/dub.wav` — the synthesized Chinese dub, aligned to the original timeline
-6. `dubbed/<name>.dubbed.mp4` — **the product**: video with Chinese dub + original BGM, subtitles still burned in
-7. `dubbed/alignment-issues.md` — cues where the Chinese didn't fit the original time window (>25% stretch), for your review
+1. `transcript/translations_dub.txt` — the dub script (one Chinese line per `en.full.srt` cue, translated for dubbing, not subtitle fragments)
+2. `transcript/<name>.zh.dub.srt` — Chinese SRT (timestamps inherited from `en.full.srt`, before re-timing)
+3. `dubbed/_reference/ref.wav` — 14-30s clean clip of the original speaker (IndexTTS2 reference)
+4. `dubbed/vocals.wav` — original vocals, separated by Demucs
+5. `dubbed/no_vocals.wav` — original BGM + SFX (kept for inspection; only mixed when BGM is present)
+6. `dubbed/_segments/sent_NNNN.wav` — per-cue IndexTTS2 output (cache, re-usable)
+7. `dubbed/_full/timeline.json` — the re-timed timeline (every cue's new start/end on the dubbed video's clock)
+8. `dubbed/_full/dub.wav` — the synthesized Chinese dub, placed on the new timeline
+9. `dubbed/_full/dubbing.srt` / `dubbing.merged.srt` — Chinese subtitles on the new timeline (merged.srt is the shorten+merge-short version used for burning)
+10. `cooked/<name>.dubbed.mp4` — **the product**: raw video, re-timed, with Chinese dub + burned Chinese subtitles
 
-The run is not done until `cook dub verify <output-root> <name>` exits 0 — see Step 6.
+The run is not done until the final video plays end-to-end with synced audio and readable subtitles — see Step 8.
 
 ## Directory layout
 
-This skill adds `dubbed/` to the per-video directory that `video-download` and `video-subtitle` already produced:
+This skill adds `dubbed/` and writes the product to `cooked/`:
 
 ```
 <output-root>/
 ├── raw/                            ← from video-download (this skill reads it)
 │   └── <name>.raw.mp4
-├── transcript/                     ← from video-subtitle (this skill reads it)
-│   └── <name>.zh.srt
-├── cooked/                         ← from video-subtitle (untouched)
-│   └── <name>.cooked.mp4
-└── dubbed/                         ← this skill's outputs
+├── transcript/                     ← from video-subtitle (this skill reads + adds)
+│   ├── <name>.en.full.srt          ← full-sentence English (the dub script source)
+│   ├── translations_dub.txt        ← this skill writes: one Chinese line per cue
+│   └── <name>.zh.dub.srt           ← this skill writes: pre-re-timing SRT
+├── cooked/                         ← this skill adds the dubbed video here
+│   └── <name>.dubbed.mp4
+└── dubbed/                         ← this skill's working directory
     ├── _reference/
-    │   ├── ref.wav
-    │   └── ref.txt
-    ├── _segments/                  ← per-cue TTS cache
+    │   └── ref.wav
+    ├── _segments/                  ← per-cue IndexTTS2 cache
+    ├── _full/
+    │   ├── timeline.json
+    │   ├── _vsegs/                 ← per-segment re-timed video chunks
+    │   ├── dub.wav
+    │   ├── video_adjusted.mp4      ← re-timed video (before burn)
+    │   ├── dubbing.srt
+    │   └── dubbing.merged.srt
     ├── vocals.wav
-    ├── no_vocals.wav
-    ├── dub.wav
-    ├── <name>.dubbed.mp4
-    └── alignment-issues.md
+    └── no_vocals.wav
 ```
 
-Rule: **`dubbed/` is additive** — it never touches `raw/`, `transcript/`, or `cooked/`. If this skill fails halfway, the bilingual cooked shipment is still complete and publishable.
+Rule: **`dubbed/` and `cooked/<name>.dubbed.mp4` are additive** — never touch `raw/` or the existing `cooked/<name>.cooked.mp4`. If this skill fails halfway, the bilingual cooked shipment is still complete.
 
 ## The pipeline
 
+The pipeline is implemented in `scripts/full_dub.py`, which takes a `stage1|stage2|stage3|stage4|all` argument so each phase runs independently and resumes from cache. The steps below describe what each stage does; the commands show the equivalent `full_dub.py stageN` invocation plus the manual fallback.
+
 ### Step 0 — Ensure the shared environment
 
-cook CLI, VoxCPM2, and Demucs must live in **one persistent shared Python environment** — the same one `video-subtitle` uses for whisperX. This is the agent's job, not the user's.
+cook CLI, IndexTTS2, and Demucs must live in **one persistent shared Python environment** — the same one `video-subtitle` uses for whisperX. This is the agent's job, not the user's.
 
-**0a. Find or create the shared environment.** Check these locations in order; use the first that has the dub tooling:
+**0a. Find or create the shared environment** — same locations as `video-subtitle` (`VIDEO_TOOLS_VENV` → `~/.venvs/video-tools/` → system Python). IndexTTS2 lives in its own checkout (e.g. `~/Git/index-tts/`) with its own `.venv` — see **[REFERENCE.md → "IndexTTS2 install"](REFERENCE.md)** for the single-thread constraint and the `OMP_NUM_THREADS=1` requirement that prevents garbage audio.
 
-1. A `VIDEO_TOOLS_VENV` environment variable (explicit user override).
-2. `~/.venvs/video-tools/` (the conventional shared location — same as `video-subtitle`).
-3. The system Python (if `cook`, `voxcpm`, `demucs` are already pip-installed there).
-
-If none exists, create one (`python -m venv ~/.venvs/video-tools`) and install the dub tooling. The install order is load-bearing — CPU torch must go in first to avoid pip pulling CUDA torch via voxcpm's deps. See **[REFERENCE.md → "The CPU torch wheel sequence"](REFERENCE.md)** for the exact commands and the torch SDPA bug workaround.
-
-**0b. Always invoke cook via the shared environment's interpreter.** Resolve `<venv>/Scripts/cook.exe` (Windows) or `<venv>/bin/cook` (macOS/Linux). For the Python scripts (`dub_audio.py`, `extract_reference.py`), use the shared venv's python directly — `<venv>/Scripts/python.exe`.
+**0b. Always invoke cook via the shared environment's interpreter.** IndexTTS2 inference uses its own venv's python (`<indextts>/.venv/Scripts/python.exe`), not cook's — the `OMP_NUM_THREADS=1` env var must be set before importing torch.
 
 **0c. Run doctor from the shared environment:**
 
@@ -77,31 +81,25 @@ If none exists, create one (`python -m venv ~/.venvs/video-tools`) and install t
 <shared-venv>/Scripts/cook doctor
 ```
 
-If `cook` lacks the `dub` subcommand, the skill falls back to its own `scripts/` (which call Demucs and ffmpeg directly). Tell the user either path is fine — but `cook dub` is preferred for the same reason `cook transcribe` is: deterministic, no shell-escaping traps.
-
-Done when the shared environment exists, VoxCPM2 imports cleanly (`python -c "from voxcpm import VoxCPM"` exits 0), Demucs is installed, and ffmpeg is on PATH.
-
-**`cook` in every step below means the shared-environment cook binary resolved here.** Same convention as `video-subtitle`.
+Done when the shared environment exists, IndexTTS2 imports cleanly in single-thread mode (`python -c "import os; os.environ['OMP_NUM_THREADS']='1'; ..."`), Demucs is installed, and ffmpeg is on PATH.
 
 ### Step 1 — Separate vocals from the raw video
 
-The original audio is one mixed track (vocals + BGM + SFX). Demucs splits it so we can replace only the vocals.
+The original audio is one mixed track (vocals + BGM + SFX). Demucs splits it so we can extract a clean reference and check for BGM later.
 
 ```
-cook dub separate <output-root> <name> [--model htdemucs_ft]
+cook dub separate <output-root> <name> [--model htdemucs]
 ```
 
-Runs Demucs `htdemucs_ft` with `--two-stems=vocals` → `vocals.wav` (the original speaker) + `no_vocals.wav` (BGM + SFX). Quality rationale and the faster `htdemucs` fallback are in REFERENCE.md. CPU runs at ~1.5× audio duration; a 30-min video takes ~45 min.
+Use `htdemucs` (single model, ~3GB RAM), not `htdemucs_ft` (bag of 4 models, ~20GB RAM — OOMs on 32GB machines). Quality is slightly lower but adequate for reference extraction.
 
-For long videos, `cook dub separate` auto-detaches (returns a JSON object with `pid`, `log`, `done_marker`; poll the log file). Process the whole file in one call — Demucs handles long audio internally; slicing introduces boundary artifacts.
+Done when `dubbed/vocals.wav` AND `dubbed/no_vocals.wav` both exist with duration matching raw ±0.5s.
 
-Done when `dubbed/vocals.wav` AND `dubbed/no_vocals.wav` both exist, and `ffprobe` reports each has duration matching `raw/<name>.raw.mp4` ±0.5s. If either is missing, the separation failed — surface the Demucs log and stop.
+### Step 2 — Extract the reference clip
 
-### Step 2 — Extract the reference clip + its transcript
+IndexTTS2 needs a **14-30 second** clean clip of the original speaker. Longer than the old VoxCPM2 requirement (8s) because IndexTTS2 clones prosody, not just timbre — it needs more material to learn rhythm.
 
-This is the step that makes the dub sound like the **original speaker**, not a generic voice. VoxCPM2's Ultimate Cloning mode takes both the reference audio AND its transcript — the transcript lets the model do audio-continuation-based cloning that preserves timbre, rhythm, and emotion far better than audio-only cloning.
-
-Run the skill's `extract_reference.py`:
+Run the skill's `extract_reference.py` against `vocals.wav`:
 
 ```bash
 <shared-venv>/Scripts/python <skill>/scripts/extract_reference.py \
@@ -109,86 +107,172 @@ Run the skill's `extract_reference.py`:
     <output-root>/dubbed/_reference/
 ```
 
-The script slides across `vocals.wav`, uses ffmpeg's `silencedetect` to find a continuous speech region (no silence gaps), and picks the 8-second window with the highest steady energy. Then it transcribes that clip with whisperX (same model `video-subtitle` used, `large-v3`) → `ref.txt`.
+The script finds the longest continuous speech region (no silence gaps > 0.3s) within 14-30s. If no single region is long enough, it picks the densest 14s window. Override by dropping a `.wav` into `voices/` or passing a custom path.
 
-The script picks the clip automatically by default. To override, drop a `.wav`/`.mp3` into `voices/` (the skill's bundled voice samples) or pass a custom path, then transcribe it yourself and write `ref.txt` — skip `extract_reference.py` entirely.
+Done when `dubbed/_reference/ref.wav` exists, is 14-30s, 16kHz mono, and contains continuous speech (no long silences).
 
-Done when `dubbed/_reference/ref.wav` exists AND `ffprobe` reports it is 5-12s, 16kHz mono AND `dubbed/_reference/ref.txt` exists with at least one full English clause (subject + verb, ≥3 words). If `ref.txt` is empty or only contains filler ("uh", "yeah", "so"), re-run Step 2 — whisperX failed on a noisy clip and Ultimate Cloning needs an accurate transcript.
+### Step 3 — Translate for dubbing (the agent does this)
 
-### Step 3 — Configure cloning
+This is where dubbing diverges from subtitles. **Do not use `translations.txt`** (the subtitle translation) — it follows whisperX's 151-fragment cuts, which split sentences. Dubbing needs **complete sentences** so the Chinese flows naturally when spoken.
 
-Use `AskUserQuestion` to confirm three things in one shot — don't ask them one at a time:
+Read `<output-root>/transcript/<name>.en.full.srt` (the full-sentence English transcript — 141 cues for a 11-min video, each one complete sentence). Translate each cue yourself, writing to `transcript/translations_dub.txt` — **one Chinese line per English cue, line N = cue N**.
 
-1. **Reference source**: the auto-extracted `ref.wav` (default, recommended) / a file in `voices/` / a custom path the user provides.
-2. **Ultimate Cloning**: on (default — uses both ref.wav + ref.txt) / off (audio-only cloning, faster but less faithful).
-3. **TTS backend**: VoxCPM2 (default, July 2026 SOTA for zero-shot cloning) / IndexTTS2 (fallback only if VoxCPM2 fails to install — see REFERENCE.md).
+**Dubbing translation principles** (different from subtitle translation):
 
-The defaults are right 90% of the time. Only the reference source warrants asking — if the auto-extracted clip sounds wrong to the user (they'll hear it in the final), they'll come back and pick a different one.
+- **Translate complete thoughts, not fragments.** The English is already full sentences (that's what `en.full.srt` is). Match that — your Chinese cue is one complete thought.
+- **Let length be natural.** Don't pad to fill the time window (the re-timing in Step 5 handles mismatches), and don't compress to fit (you'll lose meaning). Translate faithfully; the algorithm absorbs ±30%.
+- **Keep technical terms in English where Chinese devs do** — spec, plan, prototype, agent, token, compact, Wayfinder, grilling, skill, session, ticket, branch, route, etc. See **[REFERENCE.md → "Term retention list"](REFERENCE.md)** for the full set.
+- **Keep English for anything shown on screen.** If the speaker says "I'll search for model" and types "model" into a search box visible in the video, keep "model" — translating it to "模型" while the screen shows "model" disorients the viewer. Same for UI labels, code, URLs, filenames.
+- **Translate concepts that have standard Chinese names** — 数据模型 (data model), 快照 (snapshot), 选择器 (picker), 选项 (option). When a term has a common Chinese name and isn't shown on screen, use it.
+- **Line count must equal cue count.** 141 English cues = 141 Chinese lines. Never merge or split lines — it desyncs the SRT generation.
 
-Done when `ref_wav_path` points to an existing file, `ultimate` is a bool, and `tts_backend` is one of `{voxcpm2, indextts2}` (the only backends `dub_audio.py` actually supports).
+Then generate the pre-re-timing SRT (timestamps inherited from `en.full.srt`):
+
+```bash
+python <skill>/scripts/make_zh_dub_srt.py <output-root>/transcript/<name>.en.full.srt \
+    <output-root>/transcript/translations_dub.txt \
+    <output-root>/transcript/<name>.zh.dub.srt
+```
+
+**Self-review — two passes, mandatory** (same discipline as `video-subtitle` Step 3):
+- **Pass 1**: read every line as a spoken sentence. Does it sound like something a person would say?
+- **Pass 2**: scan for term-retention errors — every on-screen label, search term, UI element kept in English; every standard-concept term in Chinese. Cross-check against the term-retention list in REFERENCE.md.
+
+Done when `translations_dub.txt` has the same line count as `en.full.srt` cues, `<name>.zh.dub.srt` exists, and both review passes pass.
 
 ### Step 4 — Synthesize the Chinese dub (the slow step)
 
-Read `<output-root>/transcript/<name>.zh.srt` (the dub script with original timestamps), synthesize each cue with VoxCPM2 cloning the reference, and align each cue to its original time window.
+IndexTTS2 synthesizes each cue. **Single-threaded only** — multi-threaded inference produces garbage audio (0.05s truncated outputs) due to a float-reduction non-determinism in `SeamlessM4TFeatureExtrator`'s FFT. See **[REFERENCE.md → "The single-thread constraint"](REFERENCE.md)**.
 
 ```bash
-<shared-venv>/Scripts/python <skill>/scripts/dub_audio.py \
-    <output-root>/transcript/<name>.zh.srt \
+<indextts>/.venv/Scripts/python <skill>/scripts/synth_dub.py \
+    <output-root>/transcript/<name>.zh.dub.srt \
     <output-root>/dubbed/_reference/ref.wav \
-    <output-root>/dubbed/_reference/ref.txt \
-    <output-root>/dubbed \
-    --tts-backend voxcpm2
+    <output-root>/dubbed/_segments/
 ```
 
-What `dub_audio.py` does, per cue:
+The script sets `OMP_NUM_THREADS=1` + `torch.set_num_threads(1)` before importing torch (load-bearing — order matters), loads IndexTTS2 once, then synthesizes each cue. Output is `dubbed/_segments/sent_NNNN.wav`, cached by cue index — re-running only re-synthesizes cues whose text changed.
 
-1. **Synthesize** the Chinese text via VoxCPM2 with Ultimate Cloning (`prompt_wav_path` + `prompt_text` + `reference_wav_path`).
-2. **Time-align** via ffmpeg `atempo`: stretch the cue's natural duration to fit the original SRT cue's window. Capped at ±25% (the natural-speech limit — see REFERENCE.md for why). Cues that would exceed the cap are capped at the limit and logged to `dubbed/alignment-issues.md` for your review.
-3. **Place on timeline**: pad silence up to each cue's start offset, then mix down to `dub.wav` matching the original video's total duration.
+**No audio post-processing.** Do not run `silenceremove` or `atempo` on IndexTTS2 output — both corrupt it (silenceremove with `stop_threshold=0.01` truncates normal speech; atempo stretches artifacts). IndexTTS2's raw output is clean.
 
-The model loads once and is reused for every cue (loading VoxCPM2 is the expensive part). Cues are cached in `dubbed/_segments/sent_NNNN_<hash>.wav` keyed by `(backend, ultimate, text)` — so changing the reference or the backend invalidates the cache correctly, but re-running after a single cue's text was fixed only re-synthesizes that cue.
+**This step is slow on CPU.** RTF ~30-36 (a 5s cue takes ~3 min). A 141-cue video takes ~7 hours. Launch detached and poll the log. Tell the user this is the long step.
 
-**This step is slow on CPU.** On a Ryzen 9 7950X, VoxCPM2 runs near-realtime per cue (RTF ~1-2), but a 30-minute video has hundreds of cues, so the total wall time is hours. **Launch detached** — copy `<skill>/scripts/windows-detached.ps1` into `<output-root>/dubbed/scripts/`, fill the path variables, and run it. The launch returns immediately; poll `<output-root>/dubbed/dub.log` until it contains `DONE`.
+Done when `dubbed/_segments/sent_NNNN.wav` exists for every cue AND each is > 1KB (not a truncated garbage file).
 
-Tell the user this is the long step. Use the wait productively — pre-draft the alignment-issues review (you can already see which cues are long translations that might not fit).
+### Step 5 — Bi-directional re-timing (the core innovation)
 
-Done when `dubbed/dub.wav` exists AND `ffprobe` reports its duration matches `raw/<name>.raw.mp4` ±2% AND the log file contains `DONE`. If `dub.wav` is significantly shorter than the raw, some cues failed — check `dub.err.log` and `alignment-issues.md`.
+This is what makes the dub watchable. The Chinese audio is **never stretched** — it plays at its natural TTS speed. Instead, **each video segment is re-timed** to match the Chinese:
 
-### Step 5 — Mix and mux
+For each cue, compute `ratio = chinese_duration / english_window`:
+- **ratio < 1 (Chinese shorter)**: **speed up** the video segment (drop redundant frames). No audio change.
+- **ratio > 1 (Chinese longer)**: **slow down** the video segment (stretch the picture). No audio change.
+- **ratio ≈ 1**: no change.
 
-Combine the original BGM (no_vocals.wav) with the Chinese dub (dub.wav), then mux into the video:
+**Why this beats atempo-stretching the audio** (the old approach): stretched TTS audio sounds unnatural (chipmunk at >1.3x, drawl at <0.8x). Re-timed video looks fine — viewers don't notice 1.2x speedup or 0.7x slowdown on a talking-head video, but they immediately hear stretched speech.
 
+**The string-of-pearls timeline** (prevents audio overlap and subtitle collision):
+
+Build a new linear timeline where each cue plays back-to-back with its neighbors, gaps preserved from the original:
+1. For each cue, the new segment duration = the Chinese TTS duration (audio never changes).
+2. For each gap between cues, the new gap duration = the original gap (preserves rhythm).
+3. Each cue's `new_start` = sum of all preceding segments' new durations — strictly monotonically increasing, mathematically impossible to overlap.
+4. Each video segment is cut from the raw video at its original `[start, end]`, then `setpts` re-times it to the new duration.
+
+Run the skill's timeline builder:
+
+```bash
+python <skill>/scripts/build_timeline.py \
+    <output-root>/transcript/<name>.zh.dub.srt \
+    <output-root>/dubbed/_segments/ \
+    <output-root>/dubbed/_full/timeline.json
 ```
-cook dub mix <output-root> <name> [--bg-gain -18]
+
+Done when `timeline.json` exists, every cue's `new_start < new_end`, no two cues overlap, and the total new duration is within ±50% of the raw (a healthy dub is 10-30% longer or shorter than the original).
+
+### Step 6 — Re-time the video segments + interpolate slow segments
+
+Cut the raw video into segments (cues + gaps), re-time each, and interpolate frames on slowed segments to maintain 60fps.
+
+```bash
+python <skill>/scripts/retime_video.py \
+    <output-root>/raw/<name>.raw.mp4 \
+    <output-root>/dubbed/_full/timeline.json \
+    <output-root>/dubbed/_full/_vsegs/
 ```
 
-The mix:
-- Takes `dubbed/no_vocals.wav` (original BGM + SFX) at the configured gain (default -18dB — the "ducking" level: BGM is present during silence but the dub wins when the speaker talks).
-- Takes `dubbed/dub.wav` (Chinese vocals) at full volume.
-- Muxes onto the video's picture (from `cooked/<name>.cooked.mp4` — so the burned subtitles survive).
+For each segment:
+- **Speed-up segment (ratio<1)**: `setpts=factor*PTS` only. The source has redundant frames at 60fps; dropping them is invisible.
+- **Slow-down segment (ratio>1)**: `setpts=factor*PTS,minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:me=epzs:vsbmc=1`. The `setpts` stretches the timeline (each source frame displays longer), then `minterpolate` inserts motion-compensated intermediate frames to maintain 60fps. Without interpolation, slowed segments look choppy (15-35fps effective).
 
-The default -18dB works for most videos. For music-heavy or pure-talk sources, see REFERENCE.md's "Background-gain choices" table.
+**Known limitation**: `minterpolate`'s optical-flow estimation fails on fast non-rigid motion — waving hands leave after-image artifacts (two ghosted hands). This is an architectural limitation of optical flow, not a tunable parameter. On talking-head videos (the common case) it's acceptable; on action footage it's not. The user has accepted this trade-off — see REFERENCE.md for alternatives that don't (no interpolation = choppy but no artifacts).
 
-Done when `dubbed/<name>.dubbed.mp4` exists AND `ffprobe` reports duration matching the raw AND a spot-check at a speaking timestamp plays the Chinese dub.
+**Cost**: interpolated segments run at RTF ~23 on CPU. A video with ~90 slowed segments (the typical count) takes ~3 hours. This is the second slow step after TTS.
 
-### Step 6 — Verify and report
+Done when `_vsegs/v_NNNN.mp4` exists for every timeline segment AND the segment count matches timeline length.
 
+### Step 7 — Assemble audio, subtitles, and burn
+
+Concatenate the re-timed video segments, place the Chinese audio on the new timeline, generate subtitles, and burn.
+
+**7a. Concat segments + place audio:**
+
+```bash
+python <skill>/scripts/assemble.py \
+    <output-root>/dubbed/_full/timeline.json \
+    <output-root>/dubbed/_full/_vsegs/ \
+    <output-root>/dubbed/_segments/ \
+    <output-root>/dubbed/_full/
 ```
-cook dub verify <output-root> <name>
+
+Produces `video_adjusted.mp4` (concatenated re-timed video) and `dub.wav` (Chinese audio placed via `adelay` on the new timeline, mixed onto a silence base).
+
+**7b. Generate subtitles** — run the same `shorten` + `merge-short` + `ass` pipeline as `video-subtitle`, because the burned subtitles must be single-line-readable:
+
+```bash
+python <video-subtitle>/scripts/subtitles.py shorten \
+    <output-root>/dubbed/_full/dubbing.srt \
+    <output-root>/dubbed/_full/dubbing.short.srt --lang zh --max-zh 42
+python <video-subtitle>/scripts/subtitles.py merge-short \
+    <output-root>/dubbed/_full/dubbing.short.srt \
+    <output-root>/dubbed/_full/dubbing.merged.srt --min-dur 1.2 --max-len 42
+python <video-subtitle>/scripts/subtitles.py ass \
+    <output-root>/dubbed/_full/dubbing.merged.srt \
+    <output-root>/dubbed/_full/dubbing.zh.ass --bottom-bar 180
 ```
 
-The final gate. Checks that `dubbed/` contains the full shipment (vocals.wav, no_vocals.wav, dub.wav, `<name>.dubbed.mp4`, _reference/{ref.wav,ref.txt}), and cross-checks durations. Exit 0 = the dub is complete. Non-zero = the `missing` list tells you what to go back and produce.
+**Do not** write your own `\N` line-wrapping in the ASS — multi-line stacking overflows the 180px bottom bar. The `shorten` + `merge-short` path splits long cues into multiple single-line cues (timestamps distributed proportionally), which is what the bottom bar is designed for.
+
+**7c. Burn** (run from `_full/` so the ASS uses a relative path — the Windows `ass` filter rejects `C:` paths):
+
+```bash
+cd <output-root>/dubbed/_full
+ffmpeg -y -i video_adjusted.mp4 -i dub.wav \
+    -vf "pad=iw:ih+180:0:0:color=black,ass=burn.ass" \
+    -map 0:v -map 1:a -c:v libx264 -preset medium -crf 20 -r 60 \
+    -c:a aac -b:a 128k -shortest \
+    <output-root>/cooked/<name>.dubbed.mp4
+```
+
+Done when `<name>.dubbed.mp4` exists, duration matches the new timeline ±0.5s, and a spot-check frame at a speaking timestamp shows Chinese subtitles rendered in the bottom bar.
+
+### Step 8 — Verify
+
+Play the video end-to-end (or spot-check at 5-6 timestamps). Check:
+- **Audio-video sync**: the Chinese audio matches the speaker's lip movements and on-screen actions.
+- **Subtitle readability**: no single line overflows the screen (sample frames at different points — if you see text clipped at left/right edges, the `shorten` max-zh is too high for this font size).
+- **Slow-segment smoothness**: the interpolated segments play without obvious stutter. Hand-motion artifacts are expected and accepted.
+- **No audio gaps or overlaps**: every cue has audio, no two cues play simultaneously.
 
 Then report to the user:
 - The absolute path of `<name>.dubbed.mp4`.
-- The reference clip used (so they can sanity-check: "I cloned the voice from 02:14-02:22 of the original").
-- The number of alignment-issues flagged (and that `alignment-issues.md` lists them).
-- The TTS backend actually used (in case it fell back from VoxCPM2 to IndexTTS2).
+- The reference clip used (so they can sanity-check the voice).
+- The total duration change (e.g. "11min → 12.4min, +13%").
+- The number of cues that needed slow-down interpolation.
 
-Done when `cook dub verify` exits 0. The run is not done until this passes.
+Done when the video plays clean end-to-end. The run is not done until this passes.
 
 ## Reference
 
-The following details are pushed out of this file because they're consulted on demand, not every run. Load them when the situation calls for it:
+The following details are pushed out of this file because they're consulted on demand:
 
-- **[REFERENCE.md](REFERENCE.md)** — VoxCPM2 install details (CPU torch wheel sequence, the torch SDPA bug and its two fixes, model download via ModelScope vs HuggingFace), Demucs raw commands (when `cook dub separate` isn't available), the full ffmpeg mix/mux command (background gain, sidechain-compress ducking alternative), the time-alignment engineering notes (why ±25%, what to do with over-long cues, why we don't use IndexTTS2's `target_dur`), VoxCPM2 Ultimate Cloning internals, the IndexTTS2 fallback backend, and the Chinese-dub quality self-check (洋腔 / mis-readings / fragmentation).
+- **[REFERENCE.md](REFERENCE.md)** — IndexTTS2 install (the single-thread constraint, the garbage-audio bug, model download), the full term-retention list (which English terms stay English, which become Chinese, and the on-screen-content rule with examples), Demucs raw commands, the bi-directional re-timing math (ratio formula, the string-of-pearls construction proof), `minterpolate` parameter tuning and its artifact alternatives (blend mode, no-interpolation), the IndexTTS2 vs VoxCPM2 vs 豆包 API comparison (why IndexTTS2 won), and the Chinese-dub quality self-check (洋腔 detection, term-translation audit).

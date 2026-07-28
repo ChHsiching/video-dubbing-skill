@@ -313,12 +313,12 @@ def main():
     if issues:
         issues_md = os.path.join(args.dubbed_dir, "alignment-issues.md")
         with open(issues_md, "w", encoding="utf-8") as f:
-            f.write("# Cues that didn't fit the original time window\n\n")
-            f.write("These cues' natural TTS duration differed from the original cue\n")
-            f.write(f"duration by more than ±{int((args.max_stretch-1)*100)}%. They were capped at\n")
-            f.write(f"{args.max_stretch}x speed (too_long_capped) or kept natural (too_short_kept).\n")
-            f.write("Review and consider re-translating these cues shorter/longer in the zh.srt.\n\n")
-            f.write("| Cue | Text | Natural | Target | Final | Status |\n")
+            f.write("# Cues sped up to fit their time window\n\n")
+            f.write("These cues' natural TTS duration exceeded their SRT window, so they were\n")
+            f.write("sped up via atempo to fit exactly (no overlap with adjacent cues).\n")
+            f.write("Cues listed here were sped up more than 1.5x — review and consider\n")
+            f.write("re-translating those cues shorter in the zh.srt if they sound too rushed.\n\n")
+            f.write("| Cue | Text | Natural | Window | Final | Status |\n")
             f.write("|---|---|---|---|---|---|\n")
             for idx, text, nat, tgt, final, status in issues:
                 f.write(f"| {idx} | {text[:40]} | {nat:.2f}s | {tgt:.2f}s | {final:.2f}s | {status} |\n")
