@@ -17,7 +17,7 @@ You want a Chinese-dubbed release. If you don't have these yet, run `video-downl
 
 ## What you produce
 
-A new `dubbed/` stage folder added to the video's output directory, plus the final burned video in `cooked/`:
+A new `dubbed/` stage folder added to the video's output directory, plus the final products (video + upload subtitle) in `cooked/` and `cloud-srt/`:
 
 1. `transcript/translations_dub.txt` — the dub script (one Chinese line per `en.full.srt` cue, translated for dubbing, not subtitle fragments)
 2. `transcript/<name>.zh.dub.srt` — Chinese SRT (timestamps inherited from `en.full.srt`, before re-timing)
@@ -27,14 +27,15 @@ A new `dubbed/` stage folder added to the video's output directory, plus the fin
 6. `dubbed/_segments/sent_NNNN.wav` — per-cue IndexTTS2 output (cache, re-usable)
 7. `dubbed/_full/timeline.json` — the re-timed timeline (every cue's new start/end on the dubbed video's clock)
 8. `dubbed/_full/dub.wav` — the synthesized Chinese dub, placed on the new timeline
-9. `dubbed/_full/dubbing.srt` / `dubbing.merged.srt` — Chinese subtitles on the new timeline (merged.srt is the shorten+merge-short version used for burning)
+9. `dubbed/_full/dubbing.srt` / `dubbing.merged.srt` — Chinese subtitles on the new timeline (working files; merged.srt is the shorten+merge-short version used for burning)
 10. `cooked/<name>.dubbed.mp4` — **the product**: raw video, re-timed, with Chinese dub + burned Chinese subtitles
+11. `cloud-srt/zh.dub.srt` — **the upload subtitle**: copy of `dubbing.merged.srt`, for platforms that accept soft subs (B站云字幕). Named simply, sits next to `cloud-srt/zh.srt` from `video-subtitle`.
 
 The run is not done until the final video plays end-to-end with synced audio and readable subtitles — see Step 8.
 
 ## Directory layout
 
-This skill adds `dubbed/` and writes the product to `cooked/`:
+This skill adds `dubbed/` (working directory) and writes the final products to `cooked/` and `cloud-srt/`:
 
 ```
 <output-root>/
@@ -44,8 +45,13 @@ This skill adds `dubbed/` and writes the product to `cooked/`:
 │   ├── <name>.en.full.srt          ← full-sentence English (the dub script source)
 │   ├── translations_dub.txt        ← this skill writes: one Chinese line per cue
 │   └── <name>.zh.dub.srt           ← this skill writes: pre-re-timing SRT
-├── cooked/                         ← this skill adds the dubbed video here
-│   └── <name>.dubbed.mp4
+├── cooked/                         ← final videos live here
+│   ├── <name>.cooked.bar.mp4       ← from video-subtitle (untouched)
+│   └── <name>.dubbed.mp4           ← this skill's product
+├── cloud-srt/                      ← upload subtitles live here
+│   ├── zh.srt                      ← from video-subtitle (untouched)
+│   ├── en.srt                      ← from video-subtitle (untouched)
+│   └── zh.dub.srt                  ← this skill's upload subtitle (copy of dubbing.merged.srt)
 └── dubbed/                         ← this skill's working directory
     ├── _reference/
     │   └── ref.wav
@@ -55,13 +61,13 @@ This skill adds `dubbed/` and writes the product to `cooked/`:
     │   ├── _vsegs/                 ← per-segment re-timed video chunks
     │   ├── dub.wav
     │   ├── video_adjusted.mp4      ← re-timed video (before burn)
-    │   ├── dubbing.srt
-    │   └── dubbing.merged.srt
+    │   ├── dubbing.srt             ← working file (141 cues, pre-shorten)
+    │   └── dubbing.merged.srt      ← working file (187 cues, post-shorten; copied to cloud-srt)
     ├── vocals.wav
     └── no_vocals.wav
 ```
 
-Rule: **`dubbed/` and `cooked/<name>.dubbed.mp4` are additive** — never touch `raw/` or the existing `cooked/<name>.cooked.mp4`. If this skill fails halfway, the bilingual cooked shipment is still complete.
+Rule: **`dubbed/` is the working directory; `cooked/<name>.dubbed.mp4` and `cloud-srt/zh.dub.srt` are the products.** Never touch `raw/`, `transcript/<name>.zh.srt`, `cooked/<name>.cooked.mp4`, or `cloud-srt/{zh,en}.srt` — those belong to `video-subtitle`. If this skill fails halfway, the bilingual cooked shipment is still complete.
 
 ## The pipeline
 
@@ -241,6 +247,15 @@ python <video-subtitle>/scripts/subtitles.py ass \
 ```
 
 **Do not** write your own `\N` line-wrapping in the ASS — multi-line stacking overflows the 180px bottom bar. The `shorten` + `merge-short` path splits long cues into multiple single-line cues (timestamps distributed proportionally), which is what the bottom bar is designed for.
+
+**7b-cont. Copy the upload subtitle to `cloud-srt/`:**
+
+```bash
+cp <output-root>/dubbed/_full/dubbing.merged.srt \
+   <output-root>/cloud-srt/zh.dub.srt
+```
+
+The `dubbing.merged.srt` is a working file inside `_full/`; the upload subtitle that the user actually submits to B站云字幕 lives at `cloud-srt/zh.dub.srt` — same convention as `video-subtitle`'s `cloud-srt/zh.srt`. Simple name, sits next to its sibling, easy to find at upload time.
 
 **7c. Burn** (run from `_full/` so the ASS uses a relative path — the Windows `ass` filter rejects `C:` paths):
 

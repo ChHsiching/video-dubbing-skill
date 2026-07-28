@@ -1,104 +1,161 @@
-"""全片中配版制作：141 条翻译 → TTS 合成 → 串珠时间轴 → v3 插帧 → 烧录。
+"""Full Chinese-dub pipeline: IndexTTS2 synthesis → string-of-pearls timeline →
+bi-directional video re-timing (with minterpolate) → concat + audio + burn.
 
-分阶段设计，每阶段产物落盘，支持断点续跑：
-  Stage 1: TTS 合成（单线程，~5h）→ _segments/sent_NNNN.wav
-  Stage 2: 时间轴计算 + JSON 落盘（秒级）
-  Stage 3: 视频分段 + 插帧（~1.6h）→ _vsegs/v_NNNN.mp4
-  Stage 4: concat + 音频 + ASS + 烧录（~10min）
+Staged design — each stage writes its outputs to disk, so re-runs resume from
+cache. Designed to be called by the `cook dub` CLI (thin wrapper that imports
+this module), or directly via CLI.
 
-用法：
-  python full_dub.py stage1   # 只跑 TTS 合成
-  python full_dub.py stage2   # 只算时间轴
-  python full_dub.py stage3   # 只跑插帧（耗时）
-  python full_dub.py stage4   # concat + 烧录
-  python full_dub.py all      # 全部（stage1 后自动接 234）
+Usage (CLI):
+  python full_dub.py synth    <output-root> <name>   # stage 1: TTS synthesis
+  python full_dub.py timeline <output-root> <name>   # stage 2: timeline math
+  python full_dub.py retime   <output-root> <name>   # stage 3: video segments + interpolation
+  python full_dub.py burn     <output-root> <name>   # stage 4: concat + audio + subtitles + burn
+  python full_dub.py full     <output-root> <name>   # all four, in sequence
+
+Usage (from cook via importlib):
+  from full_dub import stage_synth, stage_timeline, stage_retime, stage_burn
+  stage_synth(output_root, name)
+
+Environment:
+  INDEXTTS_DIR  — path to the index-tts checkout (default: ~/Git/index-tts)
 """
 import os, sys, time, re, json, subprocess, contextlib, wave, shutil
+from pathlib import Path
 
-# ===== 单线程必须在最前面（坑 5）=====
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
+# ===== single-thread MUST be set before any numerical import (坑 5) =====
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
-OUT = r"C:\Users\Administrator\Git\video-subtitle\matt-pocock\dont-waste-time-on-specs-prototype-instead"
-INDEXTTS = r"C:\Users\Administrator\Git\novel-promotion\index-tts"
-RAW_MP4 = OUT + r"\raw\dont-waste-time-on-specs-prototype-instead.raw.mp4"
-EN_SRT = OUT + r"\transcript\dont-waste-time-on-specs-prototype-instead.en.full.srt"
-ZH_TXT = OUT + r"\transcript\translations_dub.txt"
-REF_WAV = OUT + r"\dubbed\_test_indextts\ref.wav"
-SEG_DIR = OUT + r"\dubbed\_full\_segments"
-VSEG_DIR = OUT + r"\dubbed\_full\_vsegs"
-WORK_DIR = OUT + r"\dubbed\_full"
-TIMELINE_JSON = WORK_DIR + r"\timeline.json"
-RAW_DUR = 658.914
+# IndexTTS2 checkout location — env-overridable for non-default installs
+INDEXTTS_DIR = os.environ.get("INDEXTTS_DIR", str(Path.home() / "Git" / "index-tts"))
 
-os.makedirs(SEG_DIR, exist_ok=True)
-os.makedirs(VSEG_DIR, exist_ok=True)
+
+# ---------- path derivation ----------
+
+def _paths(output_root: str | Path, name: str) -> dict:
+    """Derive every path this pipeline needs from (output_root, name)."""
+    root = Path(output_root)
+    work = root / "dubbed" / "_full"
+    return {
+        "root": root,
+        "raw_mp4": root / "raw" / f"{name}.raw.mp4",
+        "en_full_srt": root / "transcript" / f"{name}.en.full.srt",
+        "zh_dub_txt": root / "transcript" / "translations_dub.txt",
+        "ref_wav": root / "dubbed" / "_reference" / "ref.wav",
+        "work": work,
+        "segments": work / "_segments",
+        "vsegs": work / "_vsegs",
+        "timeline_json": work / "timeline.json",
+        "dub_wav": work / "dub.wav",
+        "video_adjusted": work / "video_adjusted.mp4",
+        "dubbing_srt": work / "dubbing.srt",
+        "dubbing_merged_srt": work / "dubbing.merged.srt",
+        "burn_ass": work / "burn.ass",
+        "final_mp4": root / "cooked" / f"{name}.dubbed.mp4",
+        "cloud_srt": root / "cloud-srt" / "zh.dub.srt",
+    }
+
+
+def _raw_dur(raw_mp4: Path) -> float:
+    """Probe the raw video's duration."""
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(raw_mp4)],
+        capture_output=True, text=True,
+    )
+    return float(r.stdout.strip())
+
+
+# ---------- small utilities ----------
 
 def get_dur(p):
-    with contextlib.closing(wave.open(p, "rb")) as w:
+    with contextlib.closing(wave.open(str(p), "rb")) as w:
         return w.getnframes() / float(w.getframerate())
 
+
 def probe_dur(p):
-    r = subprocess.run(["ffprobe","-v","error","-show_entries","format=duration",
-                        "-of","default=noprint_wrappers=1:nokey=1",p], capture_output=True, text=True)
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(p)],
+        capture_output=True, text=True,
+    )
     return float(r.stdout.strip())
+
 
 def fmt_ts(s):
     ms = int(round(s * 1000))
     h, ms = divmod(ms, 3600000); m, ms = divmod(ms, 60000); sec, ms = divmod(ms, 1000)
     return f"{h:02d}:{m:02d}:{sec:02d},{ms:03d}"
 
+
 def fmt_ass_ts(s):
     ms = int(round(s * 1000))
     h, ms = divmod(ms, 3600000); m, ms = divmod(ms, 60000); sec, ms = divmod(ms, 1000)
     return f"{h:d}:{m:02d}:{sec:02d}.{ms//10:02d}"
 
+
 def _ts(s):
     s = s.replace(",", ".")
     h, m, sec = s.split(":")
-    return int(h)*3600 + int(m)*60 + float(sec)
+    return int(h) * 3600 + int(m) * 60 + float(sec)
+
 
 def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
-# ===== 解析 en.full.srt + translations_dub.txt =====
-def load_cues():
-    _CUE_RE = re.compile(r"(\d+)\s*\n(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*\n(.*?)(?=\n\n|\n\d+\s*\n|\Z)", re.DOTALL)
+
+# ---------- cue loading ----------
+
+_CUE_RE = re.compile(
+    r"(\d+)\s*\n(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*\n"
+    r"(.*?)(?=\n\n|\n\d+\s*\n|\Z)", re.DOTALL,
+)
+
+
+def load_cues(en_full_srt: Path, zh_dub_txt: Path):
+    """Parse en.full.srt + translations_dub.txt into a list of (idx, start, end, en, zh)."""
     cues = []
-    with open(EN_SRT, encoding="utf-8") as f:
+    with open(en_full_srt, encoding="utf-8") as f:
         for m in _CUE_RE.finditer(f.read()):
             cues.append((int(m[1]), _ts(m[2]), _ts(m[3]), re.sub(r"\s+", " ", m[4].strip())))
-    with open(ZH_TXT, encoding="utf-8") as f:
+    with open(zh_dub_txt, encoding="utf-8") as f:
         zh = [l.rstrip("\n") for l in f if l.strip()]
-    assert len(cues) == len(zh), f"行数不匹配 en={len(cues)} zh={len(zh)}"
+    assert len(cues) == len(zh), f"line count mismatch: en={len(cues)} zh={len(zh)}"
     return [(idx, s, e, en, z) for (idx, s, e, en), z in zip(cues, zh)]
 
-# ===== Stage 1: TTS 合成 =====
-def stage1():
-    sys.path.insert(0, INDEXTTS)
+
+# ===== Stage 1: TTS synthesis =====
+
+def stage_synth(output_root, name: str):
+    p = _paths(output_root, name)
+    p["segments"].mkdir(parents=True, exist_ok=True)
+
+    sys.path.insert(0, INDEXTTS_DIR)
     for mod in list(sys.modules):
-        if mod.startswith("indextts"): del sys.modules[mod]
+        if mod.startswith("indextts"):
+            del sys.modules[mod]
     import torch
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
 
-    cues = load_cues()
-    log(f"Stage 1: TTS 合成 {len(cues)} 条（单线程）")
+    cues = load_cues(p["en_full_srt"], p["zh_dub_txt"])
+    log(f"Stage 1 (synth): {len(cues)} cues (single-threaded IndexTTS2)")
 
-    # 检查已完成
-    done = sum(1 for idx,_,_,_,_ in cues
-               if os.path.exists(os.path.join(SEG_DIR, f"sent_{idx:04d}.wav"))
-               and os.path.getsize(os.path.join(SEG_DIR, f"sent_{idx:04d}.wav")) > 1000)
-    log(f"  已缓存 {done}/{len(cues)} 条")
+    done = sum(
+        1 for idx, _, _, _, _ in cues
+        if (p["segments"] / f"sent_{idx:04d}.wav").exists()
+        and (p["segments"] / f"sent_{idx:04d}.wav").stat().st_size > 1000
+    )
+    log(f"  cached: {done}/{len(cues)}")
 
     if done < len(cues):
         log("loading IndexTTS2...")
         t0 = time.time()
         from indextts.infer_v2 import IndexTTS2
         tts = IndexTTS2(
-            cfg_path=os.path.join(INDEXTTS, "checkpoints", "config.yaml"),
-            model_dir=os.path.join(INDEXTTS, "checkpoints"),
+            cfg_path=os.path.join(INDEXTTS_DIR, "checkpoints", "config.yaml"),
+            model_dir=os.path.join(INDEXTTS_DIR, "checkpoints"),
             use_fp16=False, use_cuda_kernel=False, use_deepspeed=False, device="cpu",
         )
         log(f"loaded in {time.time()-t0:.1f}s")
@@ -106,93 +163,92 @@ def stage1():
     t_start = time.time()
     n_done = done
     for i, (idx, s, e, en, zh) in enumerate(cues):
-        out = os.path.join(SEG_DIR, f"sent_{idx:04d}.wav")
-        if os.path.exists(out) and os.path.getsize(out) > 1000:
+        out = p["segments"] / f"sent_{idx:04d}.wav"
+        if out.exists() and out.stat().st_size > 1000:
             continue
         t1 = time.time()
-        tts.infer(spk_audio_prompt=REF_WAV, text=zh, output_path=out, use_random=False)
+        tts.infer(spk_audio_prompt=str(p["ref_wav"]), text=zh, output_path=str(out), use_random=False)
         dur = get_dur(out)
         n_done += 1
         elapsed = time.time() - t_start
         rate = (n_done - done) / max(elapsed, 1) if elapsed > 0 else 0
         eta = (len(cues) - n_done) / rate if rate > 0 else 0
         log(f"  [{i+1}/{len(cues)}] idx{idx} {dur:.2f}s zh='{zh[:30]}' elapsed={elapsed/60:.1f}min ETA={eta/60:.1f}min")
-    log(f"Stage 1 DONE: {len(cues)} 条合成完成")
+    log(f"Stage 1 DONE: {len(cues)} cues synthesized")
 
-# ===== Stage 2: 时间轴计算 =====
-def stage2():
-    cues = load_cues()
-    log(f"Stage 2: 时间轴计算（串珠法）")
+
+# ===== Stage 2: timeline (string-of-pearls) =====
+
+def stage_timeline(output_root, name: str):
+    p = _paths(output_root, name)
+    p["work"].mkdir(parents=True, exist_ok=True)
+    raw_dur = _raw_dur(p["raw_mp4"])
+
+    cues = load_cues(p["en_full_srt"], p["zh_dub_txt"])
+    log(f"Stage 2 (timeline): string-of-pearls construction")
 
     zh_durs = []
     for idx, s, e, en, zh in cues:
-        seg = os.path.join(SEG_DIR, f"sent_{idx:04d}.wav")
-        if not os.path.exists(seg):
-            log(f"  ERROR: 缺 {seg}，请先跑 stage1"); return
+        seg = p["segments"] / f"sent_{idx:04d}.wav"
+        if not seg.exists():
+            log(f"  ERROR: missing {seg}, run synth first"); return
         zh_durs.append(get_dur(seg))
 
-    # 构建时间轴段：gap + cue 交替
     timeline = []
     prev_end = 0.0
     for i, (idx, s, e, en, zh) in enumerate(cues):
         if s > prev_end:
-            timeline.append({"kind":"gap","orig_start":prev_end,"orig_end":s,"idx":None})
-        timeline.append({"kind":"cue","orig_start":s,"orig_end":e,"idx":idx,
-                         "zh_dur":zh_durs[i],"text":zh,"en":en})
+            timeline.append({"kind": "gap", "orig_start": prev_end, "orig_end": s, "idx": None})
+        timeline.append({"kind": "cue", "orig_start": s, "orig_end": e, "idx": idx,
+                         "zh_dur": zh_durs[i], "text": zh, "en": en})
         prev_end = e
-    if prev_end < RAW_DUR:
-        timeline.append({"kind":"gap","orig_start":prev_end,"orig_end":RAW_DUR,"idx":None})
+    if prev_end < raw_dur:
+        timeline.append({"kind": "gap", "orig_start": prev_end, "orig_end": raw_dur, "idx": None})
 
-    # 累计新时间轴
     new_t = 0.0
     for seg in timeline:
         orig_dur = seg["orig_end"] - seg["orig_start"]
-        if seg["kind"] == "cue":
-            new_dur = seg["zh_dur"]   # cue 段新长度 = 中文时长
-        else:
-            new_dur = orig_dur         # gap 保留原长
+        new_dur = seg["zh_dur"] if seg["kind"] == "cue" else orig_dur
         seg["new_start"] = new_t
         seg["new_end"] = new_t + new_dur
         seg["new_dur"] = new_dur
-        seg["speed"] = orig_dur / new_dur if new_dur > 0 else 1.0  # >1快进 <1放慢
-        new_t = new_t + new_dur
+        seg["speed"] = orig_dur / new_dur if new_dur > 0 else 1.0
+        new_t += new_dur
 
     total_new = new_t
-    log(f"  新时间轴总长: {total_new:.2f}s（原 {RAW_DUR:.2f}s，{'缩短' if total_new<RAW_DUR else '拉长'} {abs(total_new-RAW_DUR):.1f}s）")
+    cues_seg = [s for s in timeline if s["kind"] == "cue"]
+    fast = [s for s in cues_seg if s["speed"] > 1.05]
+    slow = [s for s in cues_seg if s["speed"] < 0.95]
+    log(f"  new total: {total_new:.2f}s (raw {raw_dur:.2f}s, {'shorter' if total_new<raw_dur else 'longer'} by {abs(total_new-raw_dur):.1f}s)")
+    log(f"  speed-up cues: {len(fast)}, slow-down cues: {len(slow)}")
 
-    # 统计
-    cues_seg = [s for s in timeline if s["kind"]=="cue"]
-    fast = [s for s in cues_seg if s["speed"]>1.05]
-    slow = [s for s in cues_seg if s["speed"]<0.95]
-    log(f"  快进(>1.05x): {len(fast)} 条")
-    log(f"  放慢(<0.95x, setpts 帧重复): {len(slow)} 条")
-    if slow:
-        log(f"  放慢段 speed 范围: {min(s['speed'] for s in slow):.2f}x - {max(s['speed'] for s in slow):.2f}x")
+    with open(p["timeline_json"], "w", encoding="utf-8") as f:
+        json.dump({"timeline": timeline, "total_new": total_new, "raw_dur": raw_dur}, f, ensure_ascii=False, indent=2)
+    log(f"Stage 2 DONE: {p['timeline_json']}")
 
-    with open(TIMELINE_JSON, "w", encoding="utf-8") as f:
-        json.dump({"timeline":timeline,"total_new":total_new,"raw_dur":RAW_DUR}, f, ensure_ascii=False, indent=2)
-    log(f"  写入 {TIMELINE_JSON}")
-    log(f"Stage 2 DONE")
 
-# ===== Stage 3: 视频分段 + v3 插帧 =====
-def stage3():
-    if not os.path.exists(TIMELINE_JSON):
-        log("  ERROR: 缺 timeline.json，请先跑 stage2"); return
-    with open(TIMELINE_JSON, encoding="utf-8") as f:
+# ===== Stage 3: video segments + minterpolate =====
+
+def stage_retime(output_root, name: str):
+    p = _paths(output_root, name)
+    p["vsegs"].mkdir(parents=True, exist_ok=True)
+    if not p["timeline_json"].exists():
+        log("  ERROR: missing timeline.json, run timeline first"); return
+
+    with open(p["timeline_json"], encoding="utf-8") as f:
         data = json.load(f)
     timeline = data["timeline"]
-    log(f"Stage 3: 视频分段 + v3 插帧（{len(timeline)} 段）")
+    log(f"Stage 3 (retime): {len(timeline)} segments")
 
-    # 预估插帧耗时
-    slow_segs = [s for s in timeline if s["kind"]=="cue" and s["speed"]<0.95]
+    slow_segs = [s for s in timeline if s["kind"] == "cue" and s["speed"] < 0.95]
     slow_video_dur = sum(s["new_dur"] for s in slow_segs)
-    log(f"  需插帧段: {len(slow_segs)} 条，视频 {slow_video_dur:.1f}s，预估 ~{slow_video_dur*23/60:.0f}min")
+    log(f"  interpolation segments: {len(slow_segs)}, ~{slow_video_dur*23/60:.0f}min estimated")
 
     t_stage = time.time()
     for i, seg in enumerate(timeline):
-        out = os.path.join(VSEG_DIR, f"v_{i:04d}.mp4")
-        if os.path.exists(out) and os.path.getsize(out) > 1000:
-            continue   # 断点续跑
+        out = p["vsegs"] / f"v_{i:04d}.mp4"
+        if out.exists() and out.stat().st_size > 1000:
+            continue  # resume from cache
         os_v = seg["orig_start"]; oe_v = seg["orig_end"]
         orig_dur = oe_v - os_v
         new_dur = seg["new_dur"]
@@ -200,23 +256,22 @@ def stage3():
         speed = seg["speed"]
 
         if seg["kind"] == "cue" and speed < 0.95:
-            # v3 方案：放慢段 setpts + minterpolate mci 插帧（保持 60fps）
             vf = (f"setpts={factor:.6f}*PTS,"
                   f"minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:"
                   f"me_mode=bidir:me=epzs:vsbmc=1")
-            label = f"放慢{speed:.2f}x+插帧"
+            label = f"slow {speed:.2f}x+interp"
         elif seg["kind"] == "cue":
-            # 快进/不变段：纯 setpts（本来就有冗余帧，无需插帧）
             vf = f"setpts={factor:.6f}*PTS"
-            label = f"{'快进' if speed>1.05 else '不变'}{speed:.2f}x"
+            label = f"{'fast' if speed>1.05 else 'keep'} {speed:.2f}x"
         else:
             vf = "null"
             label = "gap"
 
         t0 = time.time()
-        cmd = ["ffmpeg","-y","-ss",f"{os_v:.3f}","-t",f"{orig_dur:.3f}","-i",RAW_MP4,
-               "-vf",vf,"-an","-c:v","libx264","-preset","ultrafast","-crf","18",
-               "-r","60",out]
+        cmd = ["ffmpeg", "-y", "-ss", f"{os_v:.3f}", "-t", f"{orig_dur:.3f}",
+               "-i", str(p["raw_mp4"]),
+               "-vf", vf, "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+               "-r", "60", str(out)]
         r = subprocess.run(cmd, capture_output=True, text=True)
         wall = time.time() - t0
         if r.returncode != 0:
@@ -229,108 +284,180 @@ def stage3():
             log(f"  [{n_done}/{len(timeline)}] {label} {orig_dur:.1f}s→{new_dur:.1f}s wall={wall:.0f}s ETA={eta/60:.0f}min")
     log(f"Stage 3 DONE")
 
-# ===== Stage 4: concat + 音频 + ASS + 烧录 =====
-def stage4():
-    if not os.path.exists(TIMELINE_JSON):
-        log("  ERROR: 缺 timeline.json"); return
-    with open(TIMELINE_JSON, encoding="utf-8") as f:
-        data = json.load(f)
-    timeline = data["timeline"]
-    total_new = data["total_new"]
-    log(f"Stage 4: concat + 音频 + ASS + 烧录")
 
-    # concat
-    log("  4a: concat 视频段")
-    concat_txt = WORK_DIR + r"\_concat.txt"
-    with open(concat_txt, "w") as f:
-        for i in range(len(timeline)):
-            f.write(f"file '{VSEG_DIR}\\v_{i:04d}.mp4'\n")
-    video_adj = WORK_DIR + r"\video_adjusted.mp4"
-    subprocess.run(["ffmpeg","-y","-f","concat","-safe","0","-i",concat_txt,
-                    "-c:v","libx264","-preset","ultrafast","-crf","18","-r","60",video_adj],
-                   capture_output=True, text=True)
-    log(f"    video_adjusted.mp4: {probe_dur(video_adj):.2f}s")
+# ===== Stage 4: concat + audio + subtitles + burn =====
 
-    # 音频 adelay + amix
-    log("  4b: 音频放置（adelay + amix）")
-    audio_plan = []
-    for seg in timeline:
-        if seg["kind"] != "cue": continue
-        ns = seg["new_start"]; ne = seg["new_end"]
-        audio_plan.append((SEG_DIR + f"\\sent_{seg['idx']:04d}.wav",
-                           int(round(ns*1000)), ns, ne, seg["text"]))
-    TARGET = probe_dur(video_adj)
-    inputs = ["-f","lavfi","-t",f"{TARGET}","-i","anullsrc=r=22050:cl=mono"]
-    filter_parts = ["[0:a]volume=0[base]"]
-    for i, (seg, delay_ms, _, _, _) in enumerate(audio_plan):
-        inputs.extend(["-i", seg])
-        filter_parts.append(f"[{i+1}:a]adelay={delay_ms}|{delay_ms}[d{i+1}]")
-    mix = "[base]" + "".join(f"[d{i+1}]" for i in range(len(audio_plan)))
-    filter_str = ";".join(filter_parts) + f";{mix}amix=inputs={len(audio_plan)+1}:duration=first:normalize=0[aout]"
-    dub_wav = WORK_DIR + r"\dub.wav"
-    r = subprocess.run(["ffmpeg","-y"] + inputs + ["-filter_complex",filter_str,"-map","[aout]",
-                       "-t",f"{TARGET}","-ar","22050","-ac","1",dub_wav], capture_output=True, text=True)
-    log(f"    dub.wav: {get_dur(dub_wav):.2f}s" + (f" ERR:{r.stderr[-200:]}" if r.returncode else ""))
-
-    # 验证无重叠
-    for i in range(1, len(audio_plan)):
-        assert audio_plan[i][2] >= audio_plan[i-1][3], f"重叠! cue{i} {audio_plan[i][2]} < {audio_plan[i-1][3]}"
-    log(f"    ✓ {len(audio_plan)} 条 cue 无重叠")
-
-    # ASS + SRT
-    log("  4c: 生成 ASS + SRT")
-    ass_path = WORK_DIR + r"\dubbing.ass"
-    srt_path = WORK_DIR + r"\dubbing.srt"
-    ass_header = """[Script Info]
-Title: 中配版
+# The ASS style cooked video-subtitle uses (font 64, BorderStyle 1, bottom-bar 180).
+# Hard-coded here so the dub matches the cooked release's subtitle look.
+_ASS_HEADER_BAR180 = """[Script Info]
+Title: Chinese dub
 ScriptType: v4.00+
-PlayResX: 1920
+WrapStyle: 0
+ScaledBorderAndShadow: yes
 PlayResY: 1260
+PlayResX: 1920
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Microsoft YaHei,72,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,3,4,1,2,60,60,60,1
+Style: ZH,Microsoft YaHei,64,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,60,60,110,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-    with open(ass_path, "w", encoding="utf-8") as f:
-        f.write(ass_header)
-        for (_, _, cs, ce, text) in audio_plan:
-            f.write(f"Dialogue: 0,{fmt_ass_ts(cs)},{fmt_ass_ts(ce)},Default,,0,0,0,,{text}\\N\n")
+
+
+def stage_burn(output_root, name: str):
+    p = _paths(output_root, name)
+    if not p["timeline_json"].exists():
+        log("  ERROR: missing timeline.json"); return
+    with open(p["timeline_json"], encoding="utf-8") as f:
+        data = json.load(f)
+    timeline = data["timeline"]
+    log(f"Stage 4 (burn): concat + audio + subtitles + burn")
+
+    # 4a: concat video segments
+    log("  4a: concat segments")
+    concat_txt = p["work"] / "_concat.txt"
+    with open(concat_txt, "w") as f:
+        for i in range(len(timeline)):
+            f.write(f"file '{p['vsegs'] / f'v_{i:04d}.mp4'}'\n")
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_txt),
+         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-r", "60",
+         str(p["video_adjusted"])],
+        capture_output=True, text=True,
+    )
+    log(f"    video_adjusted.mp4: {probe_dur(p['video_adjusted']):.2f}s")
+
+    # 4b: place audio (adelay + amix on silence base)
+    log("  4b: place audio (adelay + amix)")
+    audio_plan = []
+    for seg in timeline:
+        if seg["kind"] != "cue":
+            continue
+        ns, ne = seg["new_start"], seg["new_end"]
+        audio_plan.append((p["segments"] / f"sent_{seg['idx']:04d}.wav",
+                           int(round(ns * 1000)), ns, ne, seg["text"]))
+    target = probe_dur(p["video_adjusted"])
+    inputs = ["-f", "lavfi", "-t", f"{target}", "-i", "anullsrc=r=22050:cl=mono"]
+    filter_parts = ["[0:a]volume=0[base]"]
+    for i, (seg, delay_ms, _, _, _) in enumerate(audio_plan):
+        inputs.extend(["-i", str(seg)])
+        filter_parts.append(f"[{i+1}:a]adelay={delay_ms}|{delay_ms}[d{i+1}]")
+    mix = "[base]" + "".join(f"[d{i+1}]" for i in range(len(audio_plan)))
+    filter_str = ";".join(filter_parts) + f";{mix}amix=inputs={len(audio_plan)+1}:duration=first:normalize=0[aout]"
+    r = subprocess.run(
+        ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_str, "-map", "[aout]",
+         "-t", f"{target}", "-ar", "22050", "-ac", "1", str(p["dub_wav"])],
+        capture_output=True, text=True,
+    )
+    log(f"    dub.wav: {get_dur(p['dub_wav']):.2f}s" + (f" ERR:{r.stderr[-200:]}" if r.returncode else ""))
+
+    for i in range(1, len(audio_plan)):
+        assert audio_plan[i][2] >= audio_plan[i-1][3], f"overlap! cue{i} {audio_plan[i][2]} < {audio_plan[i-1][3]}"
+    log(f"    ✓ {len(audio_plan)} cues, no overlap")
+
+    # 4c: generate SRT (pre-shorten, on the new timeline)
+    log("  4c: generate dubbing.srt")
     srt_lines = []
     for i, (_, _, cs, ce, text) in enumerate(audio_plan):
         srt_lines += [str(i+1), f"{fmt_ts(cs)} --> {fmt_ts(ce)}", text, ""]
-    with open(srt_path, "w", encoding="utf-8") as f:
+    with open(p["dubbing_srt"], "w", encoding="utf-8") as f:
         f.write("\n".join(srt_lines))
-    log(f"    dubbing.ass + dubbing.srt ({len(audio_plan)} cues)")
 
-    # 烧录
-    log("  4d: 烧录（pad + ass，bottom-bar 180px）")
-    final_mp4 = OUT + r"\cooked\dont-waste-time-on-specs-prototype-instead.dubbed.mp4"
-    ass_local = WORK_DIR + r"\burn.ass"
-    shutil.copy(ass_path, ass_local)
-    r = subprocess.run(["ffmpeg","-y","-i",video_adj,"-i",dub_wav,
-                        "-vf","pad=iw:ih+180:0:0:color=black,ass=burn.ass",
-                        "-map","0:v","-map","1:a",
-                        "-c:v","libx264","-preset","medium","-crf","20","-r","60",
-                        "-c:a","aac","-b:a","128k","-shortest",final_mp4],
-                       cwd=WORK_DIR, capture_output=True, text=True)
+    # 4d: shorten + merge-short + ass (reuse video-subtitle's subtitles.py)
+    log("  4d: shorten + merge-short + ass (via video-subtitle's subtitles.py)")
+    subs_mod = _import_subtitles_module()
+    short_srt = p["work"] / "dubbing.short.srt"
+    merged_srt = p["dubbing_merged_srt"]
+    cooked_ass = p["work"] / "dubbing.cooked.ass"
+    _run_subs(subs_mod, ["shorten", str(p["dubbing_srt"]), str(short_srt), "--lang", "zh", "--max-zh", "42"])
+    _run_subs(subs_mod, ["merge-short", str(short_srt), str(merged_srt), "--min-dur", "1.2", "--max-len", "42"])
+    _run_subs(subs_mod, ["ass", str(merged_srt), str(cooked_ass), "--bottom-bar", "180"])
+
+    # strip empty EN dialogues (dub is single-language Chinese)
+    with open(cooked_ass, encoding="utf-8") as f:
+        ass_lines = [l for l in f if not (l.startswith("Dialogue:") and ",EN,,0,0,0,," in l)]
+    burn_ass = p["burn_ass"]
+    with open(burn_ass, "w", encoding="utf-8") as f:
+        f.write("".join(ass_lines))
+
+    # 4e: copy upload subtitle to cloud-srt/
+    log("  4e: copy upload subtitle to cloud-srt/")
+    p["cloud_srt"].parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(merged_srt, p["cloud_srt"])
+
+    # 4f: burn (run from work dir so ASS uses relative path — Windows ass filter rejects C: paths)
+    log("  4f: burn (pad + ass, bottom-bar 180)")
+    p["final_mp4"].parent.mkdir(parents=True, exist_ok=True)
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-i", str(p["video_adjusted"]), "-i", str(p["dub_wav"]),
+         "-vf", "pad=iw:ih+180:0:0:color=black,ass=burn.ass",
+         "-map", "0:v", "-map", "1:a",
+         "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-r", "60",
+         "-c:a", "aac", "-b:a", "128k", "-shortest", str(p["final_mp4"])],
+        cwd=str(p["work"]), capture_output=True, text=True,
+    )
     if r.returncode != 0:
         log(f"    ERR: {r.stderr[-500:]}")
     else:
-        log(f"    DONE: {final_mp4} ({probe_dur(final_mp4):.2f}s)")
+        log(f"    DONE: {p['final_mp4']} ({probe_dur(p['final_mp4']):.2f}s)")
     log(f"Stage 4 DONE")
 
+
+# ---------- video-subtitle module loader (mirrors cook's pattern) ----------
+
+def _import_subtitles_module():
+    """Load video-subtitle's subtitles.py via importlib, same as cook does."""
+    candidates = [
+        Path.home() / ".agents" / "skills" / "video-subtitle" / "scripts" / "subtitles.py",
+        Path.home() / ".zcode" / "skills" / "video-subtitle" / "scripts" / "subtitles.py",
+        Path.home() / ".claude" / "skills" / "video-subtitle" / "scripts" / "subtitles.py",
+    ]
+    for cand in candidates:
+        if cand.exists():
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("subtitles", cand)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+    raise FileNotFoundError("subtitles.py not found — install video-subtitle skill")
+
+
+def _run_subs(mod, argv):
+    old = sys.argv
+    sys.argv = ["subtitles.py"] + argv
+    try:
+        mod.main()
+    finally:
+        sys.argv = old
+
+
+# ---------- CLI entry ----------
+
+_STAGES = {
+    "synth": stage_synth,
+    "timeline": stage_timeline,
+    "retime": stage_retime,
+    "burn": stage_burn,
+}
+
+
 if __name__ == "__main__":
-    stage = sys.argv[1] if len(sys.argv) > 1 else "all"
-    if stage in ("stage1", "1"):
-        stage1()
-    if stage in ("stage2", "2", "all") and stage != "stage1":
-        stage2()
-    if stage in ("stage3", "3", "all") and stage not in ("stage1","stage2"):
-        stage3()
-    if stage in ("stage4", "4", "all") and stage not in ("stage1","stage2","stage3"):
-        stage4()
-    if stage == "all":
-        log("全部完成")
+    if len(sys.argv) < 3:
+        print(__doc__)
+        sys.exit(1)
+    cmd = sys.argv[1]
+    output_root = sys.argv[2]
+    name = sys.argv[3] if len(sys.argv) > 3 else None
+    if cmd == "full":
+        stage_synth(output_root, name)
+        stage_timeline(output_root, name)
+        stage_retime(output_root, name)
+        stage_burn(output_root, name)
+        log("all stages complete")
+    elif cmd in _STAGES:
+        _STAGES[cmd](output_root, name)
+    else:
+        print(f"unknown stage: {cmd}\n{__doc__}")
+        sys.exit(1)
