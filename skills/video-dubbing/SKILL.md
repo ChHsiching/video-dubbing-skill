@@ -71,33 +71,39 @@ Rule: **`dubbed/` is the working directory; `cooked/<name>.dubbed.mp4` and `clou
 
 ## The pipeline
 
-The pipeline is implemented in `scripts/full_dub.py`, which takes a `stage1|stage2|stage3|stage4|all` argument so each phase runs independently and resumes from cache. The steps below describe what each stage does; the commands show the equivalent `full_dub.py stageN` invocation plus the manual fallback.
+The pipeline is implemented in `scripts/full_dub.py`, which takes a `synth|timeline|retime|burn|full` argument so each phase runs independently and resumes from cache. The steps below describe what each stage does; `cook dub <stage> --python <indextts-venv>/Scripts/python.exe` invokes each through cook (which runs full_dub.py as a subprocess under the IndexTTS2 venv), and the scripts run directly as a fallback.
 
-### Step 0 — Ensure the shared environment
+### Step 0 — Resolve the environments
 
-cook CLI, IndexTTS2, and Demucs must live in **one persistent shared Python environment** — the same one `video-subtitle` uses for whisperX. This is the agent's job, not the user's.
+There are **two** Python environments in play, and confusing them is the failure mode this step exists to prevent:
 
-**0a. Find or create the shared environment** — same locations as `video-subtitle` (`VIDEO_TOOLS_VENV` → `~/.venvs/video-tools/` → system Python). IndexTTS2 lives in its own checkout (e.g. `~/Git/index-tts/`) with its own `.venv` — see **[REFERENCE.md → "IndexTTS2 install"](REFERENCE.md)** for the single-thread constraint and the `OMP_NUM_THREADS=1` requirement that prevents garbage audio.
+- **cook's environment** (system Python or `~/.venvs/video-tools/`) — where the `cook` CLI lives, with whisperX/yt-dlp/torch for the subtitle pipeline.
+- **IndexTTS2's environment** (`~/Git/index-tts/.venv`) — a separate venv holding `indextts`, `torch` (CPU build), and `demucs`. These deps are heavy and isolated on purpose; do **not** try to install them into cook's environment.
 
-**0b. Always invoke cook via the shared environment's interpreter.** IndexTTS2 inference uses its own venv's python (`<indextts>/.venv/Scripts/python.exe`), not cook's — the `OMP_NUM_THREADS=1` env var must be set before importing torch.
+cook runs each dub stage as a subprocess under the IndexTTS2 venv via `--python`, so `from indextts import ...` resolves there. **Every `cook dub` command in this skill takes `--python <indextts-venv>/Scripts/python.exe`.** Resolve the venv path once (default `~/Git/index-tts/.venv`) and reuse it for the whole run.
 
-**0c. Run doctor from the shared environment:**
+**0a. Probe both environments are reachable:**
 
 ```
-<shared-venv>/Scripts/cook doctor
+<cook-venv>/Scripts/cook doctor                                    # whisperX/yt-dlp/ffmpeg
+<indextts-venv>/Scripts/python -c "import indextts, demucs; print('ok')"   # indextts + demucs
 ```
 
-Done when the shared environment exists, IndexTTS2 imports cleanly in single-thread mode (`python -c "import os; os.environ['OMP_NUM_THREADS']='1'; ..."`), Demucs is installed, and ffmpeg is on PATH.
+**0b. Single-thread constraint.** IndexTTS2 must run single-threaded (`OMP_NUM_THREADS=1`), or it produces garbage audio. `full_dub.py` sets this internally before importing torch, so you don't need to export it yourself — just don't run two dub stages in parallel.
+
+Done when cook's doctor reports whisperX/yt-dlp/ffmpeg installed, the IndexTTS2 venv imports `indextts` + `demucs`, and you know the absolute path to `<indextts-venv>/Scripts/python.exe` to pass as `--python`.
 
 ### Step 1 — Separate vocals from the raw video
 
 The original audio is one mixed track (vocals + BGM + SFX). Demucs splits it so we can extract a clean reference and check for BGM later.
 
 ```
-cook dub separate <output-root> <name> [--model htdemucs]
+cook dub separate <output-root> <name> [--model htdemucs] --python <indextts-venv>/Scripts/python.exe
 ```
 
-Use `htdemucs` (single model, ~3GB RAM), not `htdemucs_ft` (bag of 4 models, ~20GB RAM — OOMs on 32GB machines). Quality is slightly lower but adequate for reference extraction.
+Demucs lives in the IndexTTS2 venv, so `--python` points there. Use `htdemucs` (single model, ~3GB RAM), not `htdemucs_ft` (bag of 4 models, ~20GB RAM — OOMs on 32GB machines). Quality is slightly lower but adequate for reference extraction.
+
+In foreground mode (default), cook moves the separated stems to `dubbed/vocals.wav` + `dubbed/no_vocals.wav` automatically; in `--detach` mode you move them yourself after the done marker appears.
 
 Done when `dubbed/vocals.wav` AND `dubbed/no_vocals.wav` both exist with duration matching raw ±0.5s.
 
@@ -108,10 +114,12 @@ IndexTTS2 needs a **14-30 second** clean clip of the original speaker. Longer th
 Run the skill's `extract_reference.py` against `vocals.wav`:
 
 ```bash
-<shared-venv>/Scripts/python <skill>/scripts/extract_reference.py \
+<indextts-venv>/Scripts/python <skill>/scripts/extract_reference.py \
     <output-root>/dubbed/vocals.wav \
     <output-root>/dubbed/_reference/
 ```
+
+The script uses whisperX internally to transcribe the reference clip, so it needs a venv with whisperX — the IndexTTS2 venv has it (alongside indextts/demucs), so reuse that one for consistency.
 
 The script finds the longest continuous speech region (no silence gaps > 0.3s) within 14-30s. If no single region is long enough, it picks the densest 14s window. Override by dropping a `.wav` into `voices/` or passing a custom path.
 
@@ -121,7 +129,20 @@ Done when `dubbed/_reference/ref.wav` exists, is 14-30s, 16kHz mono, and contain
 
 This is where dubbing diverges from subtitles. **Do not use `translations.txt`** (the subtitle translation) — it follows whisperX's 151-fragment cuts, which split sentences. Dubbing needs **complete sentences** so the Chinese flows naturally when spoken.
 
-Read `<output-root>/transcript/<name>.en.full.srt` (the full-sentence English transcript — 141 cues for a 11-min video, each one complete sentence). Translate each cue yourself, writing to `transcript/translations_dub.txt` — **one Chinese line per English cue, line N = cue N**.
+Read `<output-root>/transcript/<name>.en.full.srt` (the full-sentence English transcript — produce it from `en.srt` via video-subtitle's `scripts/make_full_srt.py`; 141 cues for an 11-min video, each one complete sentence). Translate each cue yourself, writing to `transcript/translations_dub.txt` — **one Chinese line per English cue, line N = cue N**.
+
+**The remaining stages (Step 4 synth → Step 5 timeline → Step 6 retime → Step 7 burn) are all implemented in `scripts/full_dub.py` and invoked through cook:**
+
+```
+cook dub synth    <root> <name> --python <indextts-venv>/Scripts/python.exe
+cook dub timeline <root> <name> --python <indextts-venv>/Scripts/python.exe
+cook dub retime   <root> <name> --python <indextts-venv>/Scripts/python.exe
+cook dub burn     <root> <name> --python <indextts-venv>/Scripts/python.exe
+# or all four at once:
+cook dub full <root> <name> --python <indextts-venv>/Scripts/python.exe
+```
+
+Each runs as a subprocess under the IndexTTS2 venv, so `from indextts import ...` resolves. The steps below describe what each stage does (so you can verify outputs and diagnose failures); the `cook dub <stage>` commands above are how you run them. The standalone script names in the code blocks below (`synth_dub.py`, `build_timeline.py`, etc.) are the legacy per-stage scripts — `full_dub.py` supersedes them, and cook calls `full_dub.py` internally.
 
 **Dubbing translation principles** (different from subtitle translation):
 
