@@ -253,21 +253,18 @@ python <skill>/scripts/assemble.py \
 
 Produces `video_adjusted.mp4` (concatenated re-timed video) and `dub.wav` (Chinese audio placed via `adelay` on the new timeline, mixed onto a silence base).
 
-**7b. Generate subtitles** — run the same `shorten` + `merge-short` + `ass` pipeline as `video-subtitle`, because the burned subtitles must be single-line-readable:
+**7b. Generate subtitles** — run `merge-short` + `ass` (NOT `shorten`). The `dubbing.srt` timestamps are the exact TTS audio positions on the new timeline — `shorten` would redistribute them by character proportion and break audio sync. Instead, `merge-short` (width-aware, only merges sub-`MIN_DUR` fragments) + `ass` (`\N` wrapping handles overflow without touching timestamps):
 
 ```bash
-python <video-subtitle>/scripts/subtitles.py shorten \
-    <output-root>/dubbed/_full/dubbing.srt \
-    <output-root>/dubbed/_full/dubbing.short.srt --lang zh --max-zh 42
 python <video-subtitle>/scripts/subtitles.py merge-short \
-    <output-root>/dubbed/_full/dubbing.short.srt \
-    <output-root>/dubbed/_full/dubbing.merged.srt --min-dur 1.2 --max-len 42
+    <output-root>/dubbed/_full/dubbing.srt \
+    <output-root>/dubbed/_full/dubbing.merged.srt --min-dur 1.2 --max-len 56 --lang zh
 python <video-subtitle>/scripts/subtitles.py ass \
     <output-root>/dubbed/_full/dubbing.merged.srt \
-    <output-root>/dubbed/_full/dubbing.zh.ass --bottom-bar 180
+    <output-root>/dubbed/_full/dubbing.zh.ass --bottom-bar 180 --max-zh-width 56
 ```
 
-**Do not** write your own `\N` line-wrapping in the ASS — multi-line stacking overflows the 180px bottom bar. The `shorten` + `merge-short` path splits long cues into multiple single-line cues (timestamps distributed proportionally), which is what the bottom bar is designed for.
+The `ass` command wraps long zh lines with `\N` at punctuation boundaries — this is the intended overflow mechanism. It keeps each cue's start/end unchanged (audio stays in sync) while splitting the text across 2-3 visual lines inside the bottom bar.
 
 **7b-cont. Copy the upload subtitle to `cloud-srt/`:**
 
