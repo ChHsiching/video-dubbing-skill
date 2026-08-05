@@ -253,18 +253,21 @@ python <skill>/scripts/assemble.py \
 
 Produces `video_adjusted.mp4` (concatenated re-timed video) and `dub.wav` (Chinese audio placed via `adelay` on the new timeline, mixed onto a silence base).
 
-**7b. Generate subtitles** — run `merge-short` + `ass` (NOT `shorten`). The `dubbing.srt` timestamps are the exact TTS audio positions on the new timeline — `shorten` would redistribute them by character proportion and break audio sync. Instead, `merge-short` (width-aware, only merges sub-`MIN_DUR` fragments) + `ass` (`\N` wrapping handles overflow without touching timestamps):
+**7b. Generate subtitles** — run the same `shorten` + `merge-short` + `ass` pipeline as `video-subtitle`, so each cue is one readable Chinese line:
 
 ```bash
-python <video-subtitle>/scripts/subtitles.py merge-short \
+python <video-subtitle>/scripts/subtitles.py shorten \
     <output-root>/dubbed/_full/dubbing.srt \
+    <output-root>/dubbed/_full/dubbing.short.srt --lang zh --max-zh 56
+python <video-subtitle>/scripts/subtitles.py merge-short \
+    <output-root>/dubbed/_full/dubbing.short.srt \
     <output-root>/dubbed/_full/dubbing.merged.srt --min-dur 1.2 --max-len 56 --lang zh
 python <video-subtitle>/scripts/subtitles.py ass \
     <output-root>/dubbed/_full/dubbing.merged.srt \
-    <output-root>/dubbed/_full/dubbing.zh.ass --bottom-bar 180 --max-zh-width 56
+    <output-root>/dubbed/_full/dubbing.zh.ass --bottom-bar 180
 ```
 
-The `ass` command wraps long zh lines with `\N` at punctuation boundaries — this is the intended overflow mechanism. It keeps each cue's start/end unchanged (audio stays in sync) while splitting the text across 2-3 visual lines inside the bottom bar.
+`shorten` splits long cues at punctuation, allocating sub-cue time by display-width proportion. The bar stays 180px; each cue is one zh line.
 
 **7b-cont. Copy the upload subtitle to `cloud-srt/`:**
 

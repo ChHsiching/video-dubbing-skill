@@ -365,19 +365,20 @@ def stage_burn(output_root, name: str):
     with open(p["dubbing_srt"], "w", encoding="utf-8") as f:
         f.write("\n".join(srt_lines))
 
-    # 4d: merge-short + ass (reuse video-subtitle's subtitles.py)
-    # NOTE: dubbing.srt timestamps are the EXACT TTS audio positions on the new
-    # timeline. Do NOT run `shorten` here — it redistributes timestamps by char
-    # proportion and breaks audio sync. Instead: merge-short (width-aware, only
-    # merges sub-MIN_DUR fragments, never splits) + ass (\N wrapping for overflow).
-    log("  4d: merge-short + ass (via video-subtitle's subtitles.py)")
+    # 4d: shorten + merge-short + ass (same pipeline as video-subtitle)
+    # shorten splits long cues into single-line cues, allocating sub-cue time
+    # by display-width proportion (wlen). This keeps each cue one zh line.
+    log("  4d: shorten + merge-short + ass (via video-subtitle's subtitles.py)")
     subs_mod = _import_subtitles_module()
+    short_srt = p["work"] / "dubbing.short.srt"
     merged_srt = p["dubbing_merged_srt"]
     cooked_ass = p["work"] / "dubbing.cooked.ass"
-    _run_subs(subs_mod, ["merge-short", str(p["dubbing_srt"]), str(merged_srt),
+    _run_subs(subs_mod, ["shorten", str(p["dubbing_srt"]), str(short_srt),
+                         "--lang", "zh", "--max-zh", "56"])
+    _run_subs(subs_mod, ["merge-short", str(short_srt), str(merged_srt),
                          "--min-dur", "1.2", "--max-len", "56", "--lang", "zh"])
     _run_subs(subs_mod, ["ass", str(merged_srt), str(cooked_ass),
-                         "--bottom-bar", "180", "--max-zh-width", "56"])
+                         "--bottom-bar", "180"])
 
     # strip empty EN dialogues (dub is single-language Chinese)
     with open(cooked_ass, encoding="utf-8") as f:
