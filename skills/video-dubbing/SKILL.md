@@ -253,7 +253,7 @@ python <skill>/scripts/assemble.py \
 
 Produces `video_adjusted.mp4` (concatenated re-timed video) and `dub.wav` (Chinese audio placed via `adelay` on the new timeline, mixed onto a silence base).
 
-**7b. Generate subtitles** — run the same `shorten` + `merge-short` + `ass` pipeline as `video-subtitle`, so each cue is one readable Chinese line:
+**7b. Generate subtitles** — run the same `shorten` + `merge-short` + `ass` pipeline as `video-subtitle`, so each cue is one readable Chinese line. The `ass` step uses **dub-specific style parameters** (not the bilingual release's 180px bar): a shorter 70px bottom bar with font 48 and marginv 5. The dub is single-language Chinese, so it doesn't need the tall two-line bar the bilingual release uses.
 
 ```bash
 python <video-subtitle>/scripts/subtitles.py shorten \
@@ -264,10 +264,11 @@ python <video-subtitle>/scripts/subtitles.py merge-short \
     <output-root>/dubbed/_full/dubbing.merged.srt --min-dur 1.2 --max-len 56 --lang zh
 python <video-subtitle>/scripts/subtitles.py ass \
     <output-root>/dubbed/_full/dubbing.merged.srt \
-    <output-root>/dubbed/_full/dubbing.zh.ass --bottom-bar 180
+    <output-root>/dubbed/_full/dubbing.zh.ass \
+    --fontsize 48 --marginv 5 --bottom-bar 70
 ```
 
-`shorten` splits long cues at punctuation, allocating sub-cue time by display-width proportion. The bar stays 180px; each cue is one zh line.
+`shorten` splits long cues at punctuation, allocating sub-cue time by display-width proportion. The bar is 70px (dub-specific; shorter than the bilingual release's 180px), each cue is one zh line, and `--fontsize 48 --marginv 5` keeps the text tight against the bottom edge. The `--fontsize`/`--marginv` flags require the upstream `subtitles.py ass` parameterization (video-subtitle-skill commit 181914d).
 
 **7b-cont. Copy the upload subtitle to `cloud-srt/`:**
 
@@ -278,12 +279,12 @@ cp <output-root>/dubbed/_full/dubbing.merged.srt \
 
 The `dubbing.merged.srt` is a working file inside `_full/`; the upload subtitle that the user actually submits to B站云字幕 lives at `cloud-srt/zh.dub.srt` — same convention as `video-subtitle`'s `cloud-srt/zh.srt`. Simple name, sits next to its sibling, easy to find at upload time.
 
-**7c. Burn** (run from `_full/` so the ASS uses a relative path — the Windows `ass` filter rejects `C:` paths):
+**7c. Burn** (run from `_full/` so the ASS uses a relative path — the Windows `ass` filter rejects `C:` paths). The ffmpeg `pad` height must match the `ass --bottom-bar` value (70px):
 
 ```bash
 cd <output-root>/dubbed/_full
 ffmpeg -y -i video_adjusted.mp4 -i dub.wav \
-    -vf "pad=iw:ih+180:0:0:color=black,ass=burn.ass" \
+    -vf "pad=iw:ih+70:0:0:color=black,ass=burn.ass" \
     -map 0:v -map 1:a -c:v libx264 -preset medium -crf 20 -r 60 \
     -c:a aac -b:a 128k -shortest \
     <output-root>/cooked/<name>.dubbed.mp4

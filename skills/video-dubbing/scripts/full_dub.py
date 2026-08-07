@@ -287,23 +287,15 @@ def stage_retime(output_root, name: str):
 
 # ===== Stage 4: concat + audio + subtitles + burn =====
 
-# The ASS style cooked video-subtitle uses (font 64, BorderStyle 1, bottom-bar 180).
-# Hard-coded here so the dub matches the cooked release's subtitle look.
-_ASS_HEADER_BAR180 = """[Script Info]
-Title: Chinese dub
-ScriptType: v4.00+
-WrapStyle: 0
-ScaledBorderAndShadow: yes
-PlayResY: 1260
-PlayResX: 1920
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: ZH,Microsoft YaHei,64,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,60,60,110,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
+# Dub-specific subtitle style. The bilingual release from video-subtitle uses a
+# 180px bottom bar with font 64 — fine for two-language subtitles, but the dub
+# is single-language Chinese, so a shorter 70px bar with a smaller font (48) and
+# a low marginv (5) keeps the text tight against the bottom edge without wasting
+# screen space. These flags require upstream subtitles.py >= 181914d (ass
+# --fontsize/--marginv parameterization).
+_DUB_BAR = 70
+_DUB_FONT = 48
+_DUB_MARGINV = 5
 
 
 def stage_burn(output_root, name: str):
@@ -378,7 +370,9 @@ def stage_burn(output_root, name: str):
     _run_subs(subs_mod, ["merge-short", str(short_srt), str(merged_srt),
                          "--min-dur", "1.2", "--max-len", "56", "--lang", "zh"])
     _run_subs(subs_mod, ["ass", str(merged_srt), str(cooked_ass),
-                         "--bottom-bar", "180"])
+                         "--fontsize", str(_DUB_FONT),
+                         "--marginv", str(_DUB_MARGINV),
+                         "--bottom-bar", str(_DUB_BAR)])
 
     # strip empty EN dialogues (dub is single-language Chinese)
     with open(cooked_ass, encoding="utf-8") as f:
@@ -393,11 +387,11 @@ def stage_burn(output_root, name: str):
     shutil.copyfile(merged_srt, p["cloud_srt"])
 
     # 4f: burn (run from work dir so ASS uses relative path — Windows ass filter rejects C: paths)
-    log("  4f: burn (pad + ass, bottom-bar 180)")
+    log(f"  4f: burn (pad + ass, bottom-bar {_DUB_BAR})")
     p["final_mp4"].parent.mkdir(parents=True, exist_ok=True)
     r = subprocess.run(
         ["ffmpeg", "-y", "-i", str(p["video_adjusted"]), "-i", str(p["dub_wav"]),
-         "-vf", "pad=iw:ih+180:0:0:color=black,ass=burn.ass",
+         "-vf", f"pad=iw:ih+{_DUB_BAR}:0:0:color=black,ass=burn.ass",
          "-map", "0:v", "-map", "1:a",
          "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-r", "60",
          "-c:a", "aac", "-b:a", "128k", "-shortest", str(p["final_mp4"])],

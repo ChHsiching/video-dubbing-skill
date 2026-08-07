@@ -1,23 +1,24 @@
 """Extract a clean reference clip + its transcript for voice cloning.
 
-Picks a 5-10s segment from separated vocals where the speaker is talking
+Picks a 14-30s segment from separated vocals where the speaker is talking
 steadily (high energy, low variance = no gaps/no overlaps), then transcribes
 that segment with whisperX to produce ref.txt — the English transcript that
-enables VoxCPM2's Ultimate Cloning mode.
+IndexTTS2 uses as its reference (the prompt whose timbre/prosody to clone).
 
 Usage:
     python extract_reference.py <vocals.wav> <reference_dir>
-        [--target-duration 8] [--min-duration 5] [--max-duration 12]
-        [--segment-window 2] [--whisper-model large-v3] [--language en]
+        [--target-duration 16] [--min-duration 5] [--max-duration 20]
+        [--whisper-model large-v3] [--language en]
 
 Outputs:
-    <reference_dir>/ref.wav    — the chosen 5-10s clip, 16kHz mono wav
+    <reference_dir>/ref.wav    — the chosen 14-30s clip, 16kHz mono wav
     <reference_dir>/ref.txt    — the English transcript of ref.wav
 
-The clip-selection heuristic: slide a window across the vocals, score each
-candidate window by (mean RMS energy) - (RMS variance penalty), and pick the
-highest-scoring window. High energy = the speaker is talking; low variance =
-talking continuously (no pauses, no silence gaps that would confuse cloning).
+The clip-selection heuristic: find the LONGEST continuous speech region (no
+silence gaps > 0.3s) and cap it at max-duration. Long, connected regions
+correlate with fast-paced speech without pauses — IndexTTS2 clones prosody
+(rhythm/pacing), not just timbre, so a connected reference yields connected
+Chinese.
 
 If the user wants a specific clip instead (e.g. "use 01:23-01:31"), they can
 skip this script and drop their own ref.wav + ref.txt into <reference_dir>/.
@@ -91,10 +92,10 @@ def pick_best_clip(vocals_path: str, target_dur: float, min_dur: float,
                    max_dur: float) -> tuple[float, float]:
     """Find the best [start, end] window: the LONGEST continuous speech region
     available (capped at max_dur). Long regions correlate with connected,
-    fast-paced speech without pauses — and VoxCPM2's Ultimate Cloning mimics
-    the reference's speaking rate, so a fast/connected reference yields
-    fast/connected Chinese (A/B test: same sentence was 13.9s with a slow
-    reference vs 4.0s with a connected one — 3.48x difference).
+    fast-paced speech without pauses — IndexTTS2 clones prosody, not just
+    timbre, so a fast/connected reference yields fast/connected Chinese
+    (A/B test: same sentence was 13.9s with a slow reference vs 4.0s with a
+    connected one — 3.48x difference).
 
     Ties broken by earliness (intro/early segments tend to be cleaner takes).
     """
@@ -118,13 +119,6 @@ def pick_best_clip(vocals_path: str, target_dur: float, min_dur: float,
     if best_end - best_start > max_dur:
         best_end = best_start + max_dur
     return (best_start, best_end)
-
-    best = min(candidates, key=score)
-    s, e = best
-    # Trim to target_dur if region is longer, keeping the start (earlier = clearer)
-    if e - s > target_dur:
-        e = s + target_dur
-    return (s, e)
 
 
 def transcribe_clip(clip_path: str, out_txt: str, model: str, language: str) -> None:
@@ -198,11 +192,11 @@ def main():
     p.add_argument("vocals_wav", help="path to separated vocals.wav (from cook dub separate)")
     p.add_argument("reference_dir", help="output dir for ref.wav + ref.txt")
     p.add_argument("--target-duration", type=float, default=16.0,
-                   help="preferred clip length in seconds (default 16; VoxCPM2 docs recommend 10-20s)")
-    p.add_argument("--min-duration", type=float, default=5.0,
-                   help="minimum acceptable clip length (default 5)")
-    p.add_argument("--max-duration", type=float, default=20.0,
-                   help="maximum clip length (default 20)")
+                   help="preferred clip length in seconds (default 16; IndexTTS2 recommends 14-30s)")
+    p.add_argument("--min-duration", type=float, default=14.0,
+                   help="minimum acceptable clip length (default 14; IndexTTS2 clones prosody and needs >=14s)")
+    p.add_argument("--max-duration", type=float, default=30.0,
+                   help="maximum clip length (default 30; matches IndexTTS2's documented upper bound)")
     p.add_argument("--whisper-model", default="large-v3",
                    help="whisperX model for the transcript (default large-v3)")
     p.add_argument("--language", default="en",
@@ -220,10 +214,9 @@ def main():
     print(f"[1/3] picked clip {start:.2f}s - {end:.2f}s ({end-start:.2f}s)", flush=True)
 
     # Extract it as 16kHz mono wav with 0.5s silence padding at head and tail.
-    # VoxCPM2's Ultimate Cloning has a known tail-leak bug (Issue #200) where
-    # the last 100-200ms of the reference bleeds into generated audio; the
-    # padding makes the tail silent so any leak is silent. The head padding
-    # gives the model a clean onset anchor.
+    # The tail padding guards against any reference-bleed into generated audio
+    # (the last 100-200ms of the prompt can otherwise leak into the first
+    # generated cue); the head padding gives the model a clean onset anchor.
     subprocess.run(
         ["ffmpeg", "-y", "-i", args.vocals_wav,
          "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
