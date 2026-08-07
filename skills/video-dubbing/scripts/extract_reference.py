@@ -7,7 +7,7 @@ IndexTTS2 uses as its reference (the prompt whose timbre/prosody to clone).
 
 Usage:
     python extract_reference.py <vocals.wav> <reference_dir>
-        [--target-duration 16] [--min-duration 5] [--max-duration 20]
+        [--target-duration 16] [--min-duration 14] [--max-duration 30]
         [--whisper-model large-v3] [--language en]
 
 Outputs:
