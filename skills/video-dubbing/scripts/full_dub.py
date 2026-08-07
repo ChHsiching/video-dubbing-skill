@@ -83,6 +83,72 @@ def probe_dur(p):
     return float(r.stdout.strip())
 
 
+# ---------- validation helpers (ticket #3) ----------
+#
+# These are pure functions that accept an injectable `prober` so they can be
+# unit-tested without ffmpeg or real media files. stage_retime/stage_burn pass
+# the real probe_dur at the call site; tests pass a lambda.
+
+def _vseg_is_valid(out: Path, expected_dur: float, prober=None) -> tuple[bool, str]:
+    """Check a generated video segment is readable and has positive duration.
+
+    Returns (True, "") when valid, (False, reason) otherwise. The corruption
+    symptom this exists to catch: ffmpeg writes a truncated file with no moov
+    atom, ffprobe then returns 0.0 or raises — that segment must be redone or
+    the concat will silently drop it and truncate the final video.
+    """
+    prober = prober or probe_dur
+    if not out.exists():
+        return False, f"missing {out.name}"
+    if out.stat().st_size < 1000:
+        return False, f"{out.name} truncated ({out.stat().st_size} bytes)"
+    try:
+        dur = prober(out)
+    except Exception as e:
+        return False, f"{out.name} probe raised: {e}"
+    if dur <= 0:
+        return False, f"{out.name} probe returned 0 (moov atom missing?)"
+    return True, ""
+
+
+def _verify_all_vsegs(vsegs_dir: Path, timeline: list, prober=None) -> list[int]:
+    """Return the list of segment indices whose vseg is missing or unreadable.
+
+    Used by stage_retime after the generation loop to confirm every expected
+    v_{i:04d}.mp4 came out clean. Empty list = all good.
+    """
+    bad = []
+    for i, seg in enumerate(timeline):
+        out = vsegs_dir / f"v_{i:04d}.mp4"
+        ok, _ = _vseg_is_valid(out, seg.get("new_dur", 0.0), prober=prober)
+        if not ok:
+            bad.append(i)
+    return bad
+
+
+def _concat_duration_ok(probed: float, expected: float, tol: float = 0.05) -> tuple[bool, str]:
+    """Check the concatenated video's duration matches the timeline total.
+
+    Returns (True, "") within tolerance, (False, reason) otherwise. The
+    silent-truncation failure mode: concat demuxer skips corrupted vsegs, so
+    the result is shorter than the timeline's sum of new_durs. We abort if the
+    difference exceeds `tol` (default 5%, measured against the timeline total).
+    """
+    if expected <= 0:
+        return False, f"expected duration {expected} <= 0 (timeline empty?)"
+    if probed <= 0:
+        return False, f"probed duration {probed} <= 0 (concat failed to probe?)"
+    diff = probed - expected
+    rel = abs(diff) / expected
+    if rel > tol:
+        direction = "short" if diff < 0 else "long"
+        return False, (
+            f"concat duration {probed:.2f}s is {rel*100:.1f}% {direction} of "
+            f"timeline total {expected:.2f}s (tolerance {tol*100:.0f}%)"
+        )
+    return True, ""
+
+
 def fmt_ts(s):
     ms = int(round(s * 1000))
     h, ms = divmod(ms, 3600000); m, ms = divmod(ms, 60000); sec, ms = divmod(ms, 1000)
@@ -245,10 +311,21 @@ def stage_retime(output_root, name: str):
     log(f"  interpolation segments: {len(slow_segs)}, ~{slow_video_dur*23/60:.0f}min estimated")
 
     t_stage = time.time()
+    MAX_SEG_RETRIES = 2  # redo a corrupted segment this many times before giving up
     for i, seg in enumerate(timeline):
         out = p["vsegs"] / f"v_{i:04d}.mp4"
         if out.exists() and out.stat().st_size > 1000:
-            continue  # resume from cache
+            # Resume from cache — but still validate; a previous run may have
+            # left a truncated file (moov atom missing) that ffprobe rejects.
+            ok, reason = _vseg_is_valid(out, seg.get("new_dur", 0.0))
+            if ok:
+                continue
+            log(f"  [{i+1}/{len(timeline)}] cached {out.name} invalid ({reason}) — regenerating")
+            try:
+                out.unlink()
+            except OSError:
+                pass
+
         os_v = seg["orig_start"]; oe_v = seg["orig_end"]
         orig_dur = oe_v - os_v
         new_dur = seg["new_dur"]
@@ -267,22 +344,50 @@ def stage_retime(output_root, name: str):
             vf = "null"
             label = "gap"
 
-        t0 = time.time()
         cmd = ["ffmpeg", "-y", "-ss", f"{os_v:.3f}", "-t", f"{orig_dur:.3f}",
                "-i", str(p["raw_mp4"]),
                "-vf", vf, "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
                "-r", "60", str(out)]
-        r = subprocess.run(cmd, capture_output=True, text=True)
-        wall = time.time() - t0
-        if r.returncode != 0:
-            log(f"  [{i+1}/{len(timeline)}] ERR seg {i}: {r.stderr[-200:]}")
-        else:
+
+        # Retry loop: ffmpeg can return 0 yet write a truncated file (moov atom
+        # missing) that ffprobe rejects. Probe each output; redo on failure.
+        for attempt in range(MAX_SEG_RETRIES + 1):
+            t0 = time.time()
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            wall = time.time() - t0
+            if r.returncode != 0:
+                log(f"  [{i+1}/{len(timeline)}] ERR seg {i} (attempt {attempt+1}): {r.stderr[-200:]}")
+                ok, reason = False, "ffmpeg non-zero exit"
+            else:
+                ok, reason = _vseg_is_valid(out, new_dur)
+            if ok:
+                break
+            # Corrupted output — delete so the retry (or a later run) regenerates.
+            try:
+                out.unlink()
+            except OSError:
+                pass
+            if attempt < MAX_SEG_RETRIES:
+                log(f"  [{i+1}/{len(timeline)}] seg {i} invalid ({reason}) — retry {attempt+1}/{MAX_SEG_RETRIES}")
+
+        if ok:
             elapsed = time.time() - t_stage
             n_done = i + 1
             rate = n_done / max(elapsed, 1)
             eta = (len(timeline) - n_done) / rate if rate > 0 else 0
             log(f"  [{n_done}/{len(timeline)}] {label} {orig_dur:.1f}s→{new_dur:.1f}s wall={wall:.0f}s ETA={eta/60:.0f}min")
-    log(f"Stage 3 DONE")
+        else:
+            log(f"  [{i+1}/{len(timeline)}] FAILED seg {i} after {MAX_SEG_RETRIES+1} attempts: {reason}")
+
+    # Post-loop: confirm every expected vseg exists and is readable. A missing
+    # vseg here would silently truncate the concat, so name the bad ones and
+    # abort instead of producing a short final video.
+    bad = _verify_all_vsegs(p["vsegs"], timeline)
+    if bad:
+        log(f"  ERROR: {len(bad)} segment(s) missing or unreadable: {bad}")
+        log(f"  Stage 3 ABORTED — re-run `retime` to regenerate, or investigate ffmpeg/minterpolate failures on those segments.")
+        return
+    log(f"Stage 3 DONE — {len(timeline)} segments verified")
 
 
 # ===== Stage 4: concat + audio + subtitles + burn =====
@@ -313,13 +418,30 @@ def stage_burn(output_root, name: str):
     with open(concat_txt, "w") as f:
         for i in range(len(timeline)):
             f.write(f"file '{p['vsegs'] / f'v_{i:04d}.mp4'}'\n")
-    subprocess.run(
+    r_concat = subprocess.run(
         ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_txt),
          "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-r", "60",
          str(p["video_adjusted"])],
         capture_output=True, text=True,
     )
-    log(f"    video_adjusted.mp4: {probe_dur(p['video_adjusted']):.2f}s")
+    if r_concat.returncode != 0:
+        # Concat failing almost always means an upstream vseg is corrupt (stage
+        # 3's validation should have caught this, but a filesystem race or a
+        # mid-run kill can leave bad state). Abort here rather than producing a
+        # silently-truncated video downstream.
+        log(f"    ERR concat failed (rc={r_concat.returncode}): {r_concat.stderr[-400:]}")
+        log(f"    Stage 4 ABORTED — re-run `retime` to regenerate vsegs, then retry burn.")
+        return
+
+    concat_dur = probe_dur(p["video_adjusted"])
+    total_new = data.get("total_new")
+    if total_new:
+        ok, reason = _concat_duration_ok(concat_dur, total_new)
+        if not ok:
+            log(f"    ERR {reason}")
+            log(f"    Stage 4 ABORTED — concat duration doesn't match timeline; a vseg may be corrupt or dropped. Re-run `retime`.")
+            return
+    log(f"    video_adjusted.mp4: {concat_dur:.2f}s (timeline total {total_new:.2f}s)" if total_new else f"    video_adjusted.mp4: {concat_dur:.2f}s")
 
     # 4b: place audio (adelay + amix on silence base)
     log("  4b: place audio (adelay + amix)")
