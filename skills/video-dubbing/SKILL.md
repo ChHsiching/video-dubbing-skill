@@ -165,7 +165,15 @@ python <skill>/scripts/make_zh_dub_srt.py <output-root>/transcript/<name>.en.ful
 - **Pass 1**: read every line as a spoken sentence. Does it sound like something a person would say?
 - **Pass 2**: scan for term-retention errors — every on-screen label, search term, UI element kept in English; every standard-concept term in Chinese. Cross-check against the term-retention list in REFERENCE.md.
 
-Done when `translations_dub.txt` has the same line count as `en.full.srt` cues, `<name>.zh.dub.srt` exists, and both review passes pass.
+**Quality gate — fan-out subagent review (mandatory, before synth).** The self-review passes above are you checking your own work; this gate is a **separate subagent** reviewing it cold. Fan out a subagent with read access to both `<name>.en.full.srt` and `translations_dub.txt`, and ask it to check, for every cue:
+
+1. **Translation accuracy** — does the Chinese faithfully convey the English sentence's meaning? No dropped clauses, no added content, no mistranslations.
+2. **Proper-noun spelling** — names (people, products, companies) spelled exactly as the source uses them. "Claude" not "克劳德", "IndexTTS" not "索引TTS", unless a standard Chinese name genuinely exists.
+3. **TTS readability** — will IndexTTS2 pronounce this naturally? No awkward character sequences, no orphaned punctuation, numbers and symbols written the way they should be spoken.
+
+The review must happen **before** Step 4 (synth) because TTS is the expensive step (~7 hours for a 141-cue video) — a translation error caught after synth means re-synthesizing every corrected cue. **Read every line of both files; do not pattern-match against known-error shapes** (regex-style scanning for "looks wrong" misses the subtle errors that actually ship — a dropped 的, a misspelled proper noun, a clause that drifted). The subagent's completion criterion: it has read every cue pair end-to-end and either confirms each is correct or lists the specific cue indices that need fixing. Fix anything it flags, then re-run the gate on the changed lines only.
+
+Done when `translations_dub.txt` has the same line count as `en.full.srt` cues, `<name>.zh.dub.srt` exists, both self-review passes pass, **and** the fan-out subagent review has confirmed every cue.
 
 ### Step 4 — Synthesize the Chinese dub (the slow step)
 
@@ -278,6 +286,16 @@ cp <output-root>/dubbed/_full/dubbing.merged.srt \
 ```
 
 The `dubbing.merged.srt` is a working file inside `_full/`; the upload subtitle that the user actually submits to B站云字幕 lives at `cloud-srt/zh.dub.srt` — same convention as `video-subtitle`'s `cloud-srt/zh.srt`. Simple name, sits next to its sibling, easy to find at upload time.
+
+**Quality gate — fan-out subagent review of `dubbing.merged.srt` (mandatory, before burn).** This SRT is what gets burned into the final video *and* shipped as the upload subtitle, so errors here are the most visible kind — they're on screen for the whole video. Fan out a subagent with read access to `dubbed/_full/dubbing.merged.srt` and ask it to check:
+
+1. **Split words** — a single Chinese word or English term broken across two cues by `shorten`, so the viewer sees a fragment on its own (e.g. "数据" / "模型" split across cues when it should be one "数据模型" line). Each cue should read as a complete, self-contained thought.
+2. **Adjacent duplicates** — the same Chinese line (or near-duplicate) appearing in two consecutive cues. This is the failure mode the upstream biliteral-dedup fix targets; a regression here means a line plays twice on screen.
+3. **Missing cues** — gaps in the cue numbering, or cues with empty text. A dropped cue means a stretch of video with no subtitle at all.
+
+**Read every cue end-to-end; do not pattern-match against known-error shapes.** The `shorten`/`merge-short` transforms produce cues that look superficially similar (many start with the same particles), so regex-style scanning flags false positives and misses the real errors — a duplicate that differs by one character, a split that lands mid-clause rather than mid-word. The subagent's completion criterion: it has read every cue top to bottom and either confirms the file is clean or lists the specific cue numbers with their problem. Fix anything it flags (usually by hand-editing the SRT or re-running `merge-short` with adjusted params), then re-run the gate.
+
+This gate sits **before** the burn (7c) on purpose: once the subtitles are burned in, fixing an error means re-running the 30-60 minute burn step, not editing a text file.
 
 **7c. Burn** (run from `_full/` so the ASS uses a relative path — the Windows `ass` filter rejects `C:` paths). The ffmpeg `pad` height must match the `ass --bottom-bar` value (70px):
 
