@@ -142,7 +142,7 @@ cook dub burn     <root> <name> --python <indextts-venv>/Scripts/python.exe
 cook dub full <root> <name> --python <indextts-venv>/Scripts/python.exe
 ```
 
-Each runs as a subprocess under the IndexTTS2 venv, so `from indextts import ...` resolves. The steps below describe what each stage does (so you can verify outputs and diagnose failures); the `cook dub <stage>` commands above are how you run them. The standalone script names in the code blocks below (`synth_dub.py`, `build_timeline.py`, etc.) are the legacy per-stage scripts — `full_dub.py` supersedes them, and cook calls `full_dub.py` internally.
+The steps below describe what each stage does internally (so you can verify outputs and diagnose failures); the `cook dub <stage>` commands above are how you run them.
 
 **Dubbing translation principles** (different from subtitle translation):
 
@@ -180,13 +180,10 @@ Done when `translations_dub.txt` has the same line count as `en.full.srt` cues, 
 IndexTTS2 synthesizes each cue. **Single-threaded only** — multi-threaded inference produces garbage audio (0.05s truncated outputs) due to a float-reduction non-determinism in `SeamlessM4TFeatureExtrator`'s FFT. See **[REFERENCE.md → "The single-thread constraint"](REFERENCE.md)**.
 
 ```bash
-<indextts>/.venv/Scripts/python <skill>/scripts/synth_dub.py \
-    <output-root>/transcript/<name>.zh.dub.srt \
-    <output-root>/dubbed/_reference/ref.wav \
-    <output-root>/dubbed/_segments/
+cook dub synth <output-root> <name> --python <indextts-venv>/Scripts/python.exe
 ```
 
-The script sets `OMP_NUM_THREADS=1` + `torch.set_num_threads(1)` before importing torch (load-bearing — order matters), loads IndexTTS2 once, then synthesizes each cue. Output is `dubbed/_segments/sent_NNNN.wav`, cached by cue index — re-running only re-synthesizes cues whose text changed.
+`stage_synth` sets `OMP_NUM_THREADS=1` + `torch.set_num_threads(1)` before importing torch (load-bearing — order matters), loads IndexTTS2 once, then synthesizes each cue. Output is `dubbed/_full/_segments/sent_NNNN.wav`, cached by cue index — re-running only re-synthesizes cues whose text changed.
 
 **No audio post-processing.** Do not run `silenceremove` or `atempo` on IndexTTS2 output — both corrupt it (silenceremove with `stop_threshold=0.01` truncates normal speech; atempo stretches artifacts). IndexTTS2's raw output is clean.
 
@@ -213,13 +210,10 @@ Build a new linear timeline where each cue plays back-to-back with its neighbors
 3. Each cue's `new_start` = sum of all preceding segments' new durations — strictly monotonically increasing, mathematically impossible to overlap.
 4. Each video segment is cut from the raw video at its original `[start, end]`, then `setpts` re-times it to the new duration.
 
-Run the skill's timeline builder:
+Run the timeline builder:
 
 ```bash
-python <skill>/scripts/build_timeline.py \
-    <output-root>/transcript/<name>.zh.dub.srt \
-    <output-root>/dubbed/_segments/ \
-    <output-root>/dubbed/_full/timeline.json
+cook dub timeline <output-root> <name> --python <indextts-venv>/Scripts/python.exe
 ```
 
 Done when `timeline.json` exists, every cue's `new_start < new_end`, no two cues overlap, and the total new duration is within ±50% of the raw (a healthy dub is 10-30% longer or shorter than the original).
@@ -229,10 +223,7 @@ Done when `timeline.json` exists, every cue's `new_start < new_end`, no two cues
 Cut the raw video into segments (cues + gaps), re-time each, and interpolate frames on slowed segments to maintain 60fps.
 
 ```bash
-python <skill>/scripts/retime_video.py \
-    <output-root>/raw/<name>.raw.mp4 \
-    <output-root>/dubbed/_full/timeline.json \
-    <output-root>/dubbed/_full/_vsegs/
+cook dub retime <output-root> <name> --python <indextts-venv>/Scripts/python.exe
 ```
 
 For each segment:
@@ -249,66 +240,30 @@ Done when `_vsegs/v_NNNN.mp4` exists for every timeline segment AND the segment 
 
 Concatenate the re-timed video segments, place the Chinese audio on the new timeline, generate subtitles, and burn.
 
-**7a. Concat segments + place audio:**
+**7a. Concat segments + place audio** — `cook dub burn` runs the full assembly (concat re-timed segments, place Chinese audio on the new timeline via `adelay`, generate subtitles, burn) in one stage:
 
 ```bash
-python <skill>/scripts/assemble.py \
-    <output-root>/dubbed/_full/timeline.json \
-    <output-root>/dubbed/_full/_vsegs/ \
-    <output-root>/dubbed/_segments/ \
-    <output-root>/dubbed/_full/
+cook dub burn <output-root> <name> --python <indextts-venv>/Scripts/python.exe
 ```
 
-Produces `video_adjusted.mp4` (concatenated re-timed video) and `dub.wav` (Chinese audio placed via `adelay` on the new timeline, mixed onto a silence base).
+Produces `cooked/<name>.dubbed.mp4` and `video_adjusted.mp4` + `dub.wav` (intermediates under `dubbed/_full/`).
 
-**7b. Generate subtitles** — run the same `shorten` + `merge-short` + `ass` pipeline as `video-subtitle`, so each cue is one readable Chinese line. The `ass` step uses **dub-specific style parameters** (not the bilingual release's 180px bar): a shorter 70px bottom bar with font 48 and marginv 5. The dub is single-language Chinese, so it doesn't need the tall two-line bar the bilingual release uses.
+**7b–7c are inside `cook dub burn`.** The same command also generates the Chinese subtitles (same `shorten` + `merge-short` + `ass` pipeline as `video-subtitle`) and burns them — you do not run those steps by hand. What `cook dub burn` uses, and why it differs from the bilingual release:
 
-```bash
-python <video-subtitle>/scripts/subtitles.py shorten \
-    <output-root>/dubbed/_full/dubbing.srt \
-    <output-root>/dubbed/_full/dubbing.short.srt --lang zh --max-zh 56
-python <video-subtitle>/scripts/subtitles.py merge-short \
-    <output-root>/dubbed/_full/dubbing.short.srt \
-    <output-root>/dubbed/_full/dubbing.merged.srt --min-dur 1.2 --max-len 56 --lang zh
-python <video-subtitle>/scripts/subtitles.py ass \
-    <output-root>/dubbed/_full/dubbing.merged.srt \
-    <output-root>/dubbed/_full/dubbing.zh.ass \
-    --fontsize 48 --marginv 5 --bottom-bar 70
-```
+- **Dub-specific subtitle style**: a shorter 70px bottom bar with font 48 and marginv 5 (the bilingual release's taller bar is for two lines; the dub is single-language Chinese, so it uses a tighter bar). These parameters are baked into `stage_burn`; the `--fontsize`/`--marginv` flags require the upstream `subtitles.py ass` parameterization (video-subtitle-skill commit 181914d).
+- **Upload subtitle**: `cook dub burn` copies the merged subtitle to `cloud-srt/zh.dub.srt` — same convention as `video-subtitle`'s `cloud-srt/zh.srt`. Simple name, sits next to its sibling, easy to find at upload time.
 
-`shorten` splits long cues at punctuation, allocating sub-cue time by display-width proportion. The bar is 70px (dub-specific; shorter than the bilingual release's 180px), each cue is one zh line, and `--fontsize 48 --marginv 5` keeps the text tight against the bottom edge. The `--fontsize`/`--marginv` flags require the upstream `subtitles.py ass` parameterization (video-subtitle-skill commit 181914d).
-
-**7b-cont. Copy the upload subtitle to `cloud-srt/`:**
-
-```bash
-cp <output-root>/dubbed/_full/dubbing.merged.srt \
-   <output-root>/cloud-srt/zh.dub.srt
-```
-
-The `dubbing.merged.srt` is a working file inside `_full/`; the upload subtitle that the user actually submits to B站云字幕 lives at `cloud-srt/zh.dub.srt` — same convention as `video-subtitle`'s `cloud-srt/zh.srt`. Simple name, sits next to its sibling, easy to find at upload time.
-
-**Quality gate — fan-out subagent review of `dubbing.merged.srt` (mandatory, before burn).** This SRT is what gets burned into the final video *and* shipped as the upload subtitle, so errors here are the most visible kind — they're on screen for the whole video. Fan out a subagent with read access to `dubbed/_full/dubbing.merged.srt` and ask it to check:
+**Quality gate — fan-out subagent review of the burned dub subtitles (mandatory, after `cook dub burn`).** `cloud-srt/zh.dub.srt` is what gets burned into the final video *and* shipped as the upload subtitle, so errors here are the most visible kind — they're on screen for the whole video. After `cook dub burn` produces it, fan out a subagent with read access to `cloud-srt/zh.dub.srt` and ask it to check:
 
 1. **Split words** — a single Chinese word or English term broken across two cues by `shorten`, so the viewer sees a fragment on its own (e.g. "数据" / "模型" split across cues when it should be one "数据模型" line). Each cue should read as a complete, self-contained thought.
-2. **Adjacent duplicates** — the same Chinese line (or near-duplicate) appearing in two consecutive cues. This is the failure mode the upstream biliteral-dedup fix targets; a regression here means a line plays twice on screen.
+2. **Adjacent duplicates** — the same Chinese line (or near-duplicate) appearing in two consecutive cues. A regression here means a line plays twice on screen.
 3. **Missing cues** — gaps in the cue numbering, or cues with empty text. A dropped cue means a stretch of video with no subtitle at all.
 
-**Read every cue end-to-end; do not pattern-match against known-error shapes.** The `shorten`/`merge-short` transforms produce cues that look superficially similar (many start with the same particles), so regex-style scanning flags false positives and misses the real errors — a duplicate that differs by one character, a split that lands mid-clause rather than mid-word. The subagent's completion criterion: it has read every cue top to bottom and either confirms the file is clean or lists the specific cue numbers with their problem. Fix anything it flags (usually by hand-editing the SRT or re-running `merge-short` with adjusted params), then re-run the gate.
+**Read every cue end-to-end; do not pattern-match against known-error shapes.** The `shorten`/`merge-short` transforms produce cues that look superficially similar (many start with the same particles), so regex-style scanning flags false positives and misses the real errors — a duplicate that differs by one character, a split that lands mid-clause rather than mid-word. The subagent's completion criterion: it has read every cue top to bottom and either confirms the file is clean or lists the specific cue numbers with their problem.
 
-This gate sits **before** the burn (7c) on purpose: once the subtitles are burned in, fixing an error means re-running the 30-60 minute burn step, not editing a text file.
+This gate sits **after** `cook dub burn` (the merged subtitle only exists once burn runs it). Translation-content errors were already gated in Step 3; this gate catches the `shorten`/`merge-short` artifacts. If it finds any, fix `cloud-srt/zh.dub.srt` and the in-`dubbed/_full/` source, then re-run `cook dub burn`.
 
-**7c. Burn** (run from `_full/` so the ASS uses a relative path — the Windows `ass` filter rejects `C:` paths). The ffmpeg `pad` height must match the `ass --bottom-bar` value (70px):
-
-```bash
-cd <output-root>/dubbed/_full
-ffmpeg -y -i video_adjusted.mp4 -i dub.wav \
-    -vf "pad=iw:ih+70:0:0:color=black,ass=burn.ass" \
-    -map 0:v -map 1:a -c:v libx264 -preset medium -crf 20 -r 60 \
-    -c:a aac -b:a 128k -shortest \
-    <output-root>/cooked/<name>.dubbed.mp4
-```
-
-Done when `<name>.dubbed.mp4` exists, duration matches the new timeline ±0.5s, and a spot-check frame at a speaking timestamp shows Chinese subtitles rendered in the bottom bar.
+Done when `cooked/<name>.dubbed.mp4` exists, duration matches the new timeline ±0.5s, a spot-check frame at a speaking timestamp shows Chinese subtitles rendered in the bottom bar, **and** the quality gate above has cleared.
 
 ### Step 8 — Verify
 
