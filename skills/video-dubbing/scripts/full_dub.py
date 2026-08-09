@@ -34,8 +34,12 @@ INDEXTTS_DIR = os.environ.get("INDEXTTS_DIR", str(Path.home() / "Git" / "index-t
 # ---------- path derivation ----------
 
 def _paths(output_root: str | Path, name: str) -> dict:
-    """Derive every path this pipeline needs from (output_root, name)."""
-    root = Path(output_root)
+    """Derive every path this pipeline needs from (output_root, name).
+
+    Root is resolved to absolute so downstream ffmpeg calls work regardless of
+    their cwd — Stage 4f sets cwd=work for the ass filter's bare filename, which
+    would double relative paths (e.g. dubbed/_full/ + dubbed/_full/video_adjusted.mp4)."""
+    root = Path(output_root).resolve()
     work = root / "dubbed" / "_full"
     return {
         "root": root,
@@ -417,7 +421,7 @@ def stage_burn(output_root, name: str):
     concat_txt = p["work"] / "_concat.txt"
     with open(concat_txt, "w") as f:
         for i in range(len(timeline)):
-            f.write(f"file '{p['vsegs'] / f'v_{i:04d}.mp4'}'\n")
+            f.write(f"file '{(p['vsegs'] / f'v_{i:04d}.mp4').as_posix()}'\n")
     r_concat = subprocess.run(
         ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_txt),
          "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-r", "60",
