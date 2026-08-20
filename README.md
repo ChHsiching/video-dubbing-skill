@@ -1,6 +1,6 @@
 # video-dubbing
 
-A skill that replaces a video's original English vocals with **Chinese voiceover cloned from the original speaker**, then **re-times the video** so the picture stays in sync with the Chinese. The result is a second release — same picture, Chinese audio, Chinese subtitles burned in — sitting alongside the bilingual subtitled release from [`video-subtitle`](https://github.com/ChHsiching/video-subtitle-skill).
+A skill that replaces a video's original English vocals with **Chinese voiceover cloned from the original speaker**, then **re-times the video** so the picture stays in sync with the Chinese. The result is a second release — same picture, Chinese audio, bilingual ZH+EN subtitles burned in — sitting alongside the bilingual subtitled release from [`video-subtitle`](https://github.com/ChHsiching/video-subtitle-skill).
 
 Built and tested on a CPU-only Windows machine.
 
