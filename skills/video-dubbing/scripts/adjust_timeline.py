@@ -39,9 +39,11 @@ def main():
     path = Path(args.timeline_json)
     data = json.loads(path.read_text(encoding="utf-8"))
     segs = data["timeline"]
-    backup = path.with_suffix(".pre-adjust.json")
-    if not backup.exists():
-        shutil.copyfile(path, backup)
+    # Always snapshot the state THIS run received — in the rebuild loop
+    # (timeline -> adjust -> audio fix -> timeline -> adjust ...) a
+    # cycle-1 backup surviving into cycle 2 would restore zh_dur values
+    # measured from wavs that no longer exist.
+    shutil.copyfile(path, path.with_suffix(".pre-adjust.json"))
 
     force1x = set()
     if args.force1x_file:
@@ -62,6 +64,11 @@ def main():
                 prev = segs[i - 1]
                 prev["new_end"] = round(start, 3)
                 prev["new_dur"] = round(start - prev["new_start"], 3)
+                # the extension changed prev's duration — its speed must
+                # follow or the schema goes stale on exactly this path
+                if prev["new_dur"] > 0:
+                    prev["speed"] = round(
+                        (prev["orig_end"] - prev["orig_start"]) / prev["new_dur"], 4)
                 if prev["kind"] == "gap":
                     stats["gap_extended_s"] += wait
                 else:

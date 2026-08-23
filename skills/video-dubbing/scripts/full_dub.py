@@ -676,8 +676,11 @@ def stage_burn(output_root, name: str):
     )
     if r.returncode != 0:
         log(f"    ERR: {r.stderr[-500:]}")
-    else:
-        log(f"    DONE: {p['final_mp4']} ({probe_dur(p['final_mp4']):.2f}s)")
+        # Do NOT print the DONE marker on a failed burn: cook's detached
+        # done_marker polls for "Stage 4 DONE" and would report success.
+        log(f"Stage 4 FAILED — final encode rc={r.returncode}")
+        return
+    log(f"    DONE: {p['final_mp4']} ({probe_dur(p['final_mp4']):.2f}s)")
     log(f"Stage 4 DONE")
 
 

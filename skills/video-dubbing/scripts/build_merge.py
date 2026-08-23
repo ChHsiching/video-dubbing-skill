@@ -118,9 +118,18 @@ def main():
     en_path.write_text("\n".join(en_out), encoding="utf-8")
     zh_path.write_text("\n".join(zh_out) + "\n", encoding="utf-8")
 
+    # Nothing else creates _segments_orig — if it's absent and the current
+    # cache has wavs, THIS is the moment to snapshot them: the indices are
+    # about to be renumbered, and without the snapshot the solo groups'
+    # audio is unrecoverable (synth would re-synthesize everything, or
+    # worse: a stale cache at the new indices silently mismatches).
+    if not orig.exists() and any(seg.glob("sent_*.wav")):
+        shutil.copytree(seg, orig)
+        print("snapshotted existing audio cache -> %s" % orig.name)
+
     if not orig.exists():
-        print("NOTE: %s not found — skipping audio pre-population "
-              "(no reusable v1 audio)" % orig)
+        print("NOTE: no reusable audio found — nothing to pre-populate; "
+              "cook dub synth will synthesize every group")
         return
     for f in seg.glob("sent_*.wav"):
         f.unlink()
