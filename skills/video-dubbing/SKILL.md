@@ -211,7 +211,7 @@ Speed-up ladder for slow cues, cheapest first: re-synthesize with rewritten text
 
 **Cost is per CUE, not per minute of video.** Synthesis runs at ~3.5 min/cue regardless of cue length (RTF ~30-36; a 5s cue takes ~3 min); retime costs ~30-90s per *interpolated* segment. Quote the user `cues × 3.5 min + retime 1.5-5h` before starting — an 18-min talk with 240 cues is ~14h of synthesis where an 11-min/141-cue video is ~8h.
 
-Done when `dubbed/_segments/sent_NNNN.wav` exists for every cue AND each is > 1KB (not a truncated garbage file).
+Done when `dubbed/_full/_segments/sent_NNNN.wav` exists for every cue AND each is > 1KB (not a truncated garbage file). The synth log's completion line is `Stage 1 DONE: <n> cues synthesized`.
 
 ### Step 5 — Bi-directional re-timing (the core innovation)
 
