@@ -15,7 +15,8 @@ Usage (between `cook dub timeline` and `cook dub retime`):
     python adjust_timeline.py <timeline.json> [--max-stretch 1.15]
         [--pad 0.08] [--first-cue-1x] [--force1x-file <idx-list>]
 
-Rewrites timeline.json in place (backs up to timeline.pre-adjust.json).
+Rewrites timeline.json in place (backs up to timeline.pre-adjust.json —
+refreshed every run: it always holds the state THIS run received).
 Invariants (asserted): segments tile contiguously; strictly monotonic; cue
 audio (duration zh_dur, glued to its segment start) never overlaps the next.
 """

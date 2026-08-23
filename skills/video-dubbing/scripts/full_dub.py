@@ -238,7 +238,8 @@ def stage_synth(output_root, name: str):
                 r = p["ref_wav"].parent / f"ref_{s}.wav"
                 if not r.exists():
                     log(f"  ERROR: speakers.txt wants ref_{s}.wav but it is missing")
-                    return
+                    sys.exit(1)  # failed: exit non-zero so cook reports ok:false
+
                 refs[s] = r
             speakers = labels
             counts = ", ".join(f"{s}={labels.count(s)}" for s in refs)
@@ -296,7 +297,7 @@ def stage_timeline(output_root, name: str):
     for idx, s, e, en, zh in cues:
         seg = p["segments"] / f"sent_{idx:04d}.wav"
         if not seg.exists():
-            log(f"  ERROR: missing {seg}, run synth first"); return
+            log(f"  ERROR: missing {seg}, run synth first"); sys.exit(1)
         zh_durs.append(get_dur(seg))
 
     timeline = []
@@ -338,7 +339,7 @@ def stage_retime(output_root, name: str):
     p = _paths(output_root, name)
     p["vsegs"].mkdir(parents=True, exist_ok=True)
     if not p["timeline_json"].exists():
-        log("  ERROR: missing timeline.json, run timeline first"); return
+        log("  ERROR: missing timeline.json, run timeline first"); sys.exit(1)
 
     with open(p["timeline_json"], encoding="utf-8") as f:
         data = json.load(f)
@@ -433,7 +434,8 @@ def stage_retime(output_root, name: str):
     if bad:
         log(f"  ERROR: {len(bad)} segment(s) missing or unreadable: {bad}")
         log(f"  Stage 3 ABORTED — re-run `retime` to regenerate, or investigate ffmpeg/minterpolate failures on those segments.")
-        return
+        sys.exit(1)  # failed: exit non-zero so cook reports ok:false
+
     log(f"Stage 3 DONE — {len(timeline)} segments verified")
 
 
@@ -450,7 +452,7 @@ _DUB_BAR = 220
 def stage_burn(output_root, name: str):
     p = _paths(output_root, name)
     if not p["timeline_json"].exists():
-        log("  ERROR: missing timeline.json"); return
+        log("  ERROR: missing timeline.json"); sys.exit(1)
     with open(p["timeline_json"], encoding="utf-8") as f:
         data = json.load(f)
     timeline = data["timeline"]
@@ -494,7 +496,8 @@ def stage_burn(output_root, name: str):
         # silently-truncated video downstream.
         log(f"    ERR concat failed (rc={r_concat.returncode}): {r_concat.stderr[-400:]}")
         log(f"    Stage 4 ABORTED — re-run `retime` to regenerate vsegs, then retry burn.")
-        return
+        sys.exit(1)  # failed: exit non-zero so cook reports ok:false
+
 
     concat_dur = probe_dur(p["video_adjusted"])
     total_new = data.get("total_new")
@@ -503,7 +506,8 @@ def stage_burn(output_root, name: str):
         if not ok:
             log(f"    ERR {reason}")
             log(f"    Stage 4 ABORTED — concat duration doesn't match timeline; a vseg may be corrupt or dropped. Re-run `retime`.")
-            return
+            sys.exit(1)  # failed: exit non-zero so cook reports ok:false
+
     log(f"    video_adjusted.mp4: {concat_dur:.2f}s (timeline total {total_new:.2f}s)" if total_new else f"    video_adjusted.mp4: {concat_dur:.2f}s")
 
     # 4b: place audio (sequential concatenation — string of pearls)
@@ -572,7 +576,8 @@ def stage_burn(output_root, name: str):
             if r.returncode != 0:
                 log(f"    ERR pad cue {i}: {r.stderr[-300:]}")
                 log("    Stage 4 ABORTED — audio padding failed")
-                return
+                sys.exit(1)  # failed: exit non-zero so cook reports ok:false
+
             with contextlib.closing(wave.open(str(padded), "rb")) as w:
                 out_w.writeframes(w.readframes(w.getnframes()))
 
@@ -589,7 +594,8 @@ def stage_burn(output_root, name: str):
         if r.returncode != 0:
             log(f"    ERR clamp dub.wav: {r.stderr[-300:]}")
             log("    Stage 4 ABORTED — audio clamp failed")
-            return
+            sys.exit(1)  # failed: exit non-zero so cook reports ok:false
+
     log(f"    dub.wav: {get_dur(p['dub_wav']):.2f}s")
 
     # 4c: generate SRTs (pre-shorten, on the new timeline)
@@ -679,7 +685,8 @@ def stage_burn(output_root, name: str):
         # Do NOT print the DONE marker on a failed burn: cook's detached
         # done_marker polls for "Stage 4 DONE" and would report success.
         log(f"Stage 4 FAILED — final encode rc={r.returncode}")
-        return
+        sys.exit(1)  # failed: exit non-zero so cook reports ok:false
+
     log(f"    DONE: {p['final_mp4']} ({probe_dur(p['final_mp4']):.2f}s)")
     log(f"Stage 4 DONE")
 
