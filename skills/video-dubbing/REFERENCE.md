@@ -139,6 +139,23 @@ Re-timing the video instead:
 
 A faithful Chinese translation is typically 10-30% longer or shorter than the English, depending on the content. Technical talks (lots of English terms retained) tend to run shorter (Chinese grammar is more compact). Storytelling content runs longer (Chinese needs more syllables for the same meaning). The re-timed video will be 10-30% off the original duration — this is expected and acceptable.
 
+### timeline.json — schema
+
+`dubbed/_full/timeline.json` is the plan every later stage (retime, burn, subtitles, adjuster) consumes. Top level: `{"timeline": [segments], "total_new": float, "adjust": {...} (written by adjust_timeline.py)}`. Segment fields:
+
+| field | kind | meaning |
+|---|---|---|
+| `kind` | cue/gap | `cue` = a spoken sentence (audio + video); `gap` = pause between cues (video only) |
+| `idx` | cue | cue number — indexes `sent_<idx:04d>.wav`, translations_dub.txt line, en.full.srt cue |
+| `orig_start`, `orig_end` | both | the segment's window on the RAW video clock |
+| `zh_dur` | cue | the synthesized audio's exact duration (seconds) |
+| `text` | cue | the ZH sentence (same as translations_dub line `idx`) |
+| `en` | cue | the EN full sentence |
+| `new_start`, `new_end`, `new_dur` | both | the segment's window on the re-timed clock; segments tile back-to-back (next.new_start == prev.new_end) |
+| `speed` | cue | orig_dur / new_dur playback rate (0.45x = slowed, 1.2x = sped up) |
+
+Invariants to respect when writing tools that edit this file: segments tile contiguously; starts strictly monotonic; a cue's audio (`zh_dur` from its `new_start`) never overlaps the next cue's audio.
+
 ## minterpolate — parameter tuning and alternatives
 
 ### The chosen parameters

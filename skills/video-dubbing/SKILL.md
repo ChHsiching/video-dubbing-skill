@@ -178,6 +178,15 @@ The review must happen **before** Step 4 (synth) because TTS is the expensive st
 
 Done when `translations_dub.txt` has the same line count as `en.full.srt` cues, `<name>.zh.dub.srt` exists, both self-review passes pass, **and** the fan-out subagent review has confirmed every cue.
 
+### Step 3a — Pace the script: write long, merge the rest
+
+IndexTTS2 renders standalone short lines (≤8 ZH syllables) at narration pace (~2.6 syll/s vs ~4.3 for 9-20 syllables) regardless of the reference clip — the model's speed control (`speed_emb`) is a zero-initialized dead parameter. Banter-heavy talks (audience asides, "raise your hand" beats) are full of such lines. Handle them BEFORE synth, in this order:
+
+0. **Write longer lines while translating.** Prefer a naturally fuller sentence over clipped shorthand ("这一段是真的太熬人了" not "太熬人了") — no padding, no filler, but don't compress to fragments the model will read like a title card.
+1. **Merge what remains short.** Run `python <skill>/scripts/build_merge.py <output-root> <name>` — it groups adjacent cues into 9-24-syllable units (gap ≤1.5s, band ≤24 syllables), backs up originals as `*.v1`, and pre-populates the audio cache from a previous synth (`_segments_orig`) so `cook dub synth` only fills the merged groups. **Merged groups must be synthesized with the SAME reference clip as the reused audio** — swapping references changes the timbre audibly. Merged audio plays as one unit; the subtitle pipeline re-splits it for display automatically.
+
+**Pre-synth ear gate (mandatory before committing the run).** Synthesis costs ~3.5 min/cue (240 cues ≈ 14h) and nothing downstream hears audio — the only gate before that spend is the user's ear. Synthesize a 3-sentence pilot with the chosen reference (shortest interjection ×2 + one mid sentence, ~10 min single-threaded), hand the wavs to the user, and get an explicit OK on voice AND pace. Reference choice shapes delivery pace, not just timbre: prefer a mid-tempo explanatory section — `extract_reference.py` picking the *longest* continuous speech systematically selects the slowest, most deliberate section a talk contains.
+
 ### Step 4 — Synthesize the Chinese dub (the slow step)
 
 IndexTTS2 synthesizes each cue. **Single-threaded only** — multi-threaded inference produces garbage audio (0.05s truncated outputs) due to a float-reduction non-determinism in `SeamlessM4TFeatureExtrator`'s FFT. See **[REFERENCE.md → "The single-thread constraint"](REFERENCE.md)**.
@@ -188,9 +197,19 @@ cook dub synth <output-root> <name> --python <indextts-venv>/Scripts/python.exe
 
 `stage_synth` sets `OMP_NUM_THREADS=1` + `torch.set_num_threads(1)` before importing torch (load-bearing — order matters), loads IndexTTS2 once, then synthesizes each cue. Output is `dubbed/_full/_segments/sent_NNNN.wav`, cached by cue index — re-running only re-synthesizes cues whose text changed.
 
-**No audio post-processing.** Do not run `silenceremove` or `atempo` on IndexTTS2 output — both corrupt it (silenceremove with `stop_threshold=0.01` truncates normal speech; atempo stretches artifacts). IndexTTS2's raw output is clean.
+**Pacing policy (replaces the old blanket DSP ban).** Two iron rules: **(1) normal-rate audio is untouchable** — never time-stretch, never atempo; length mismatches are absorbed on the video side. **(2) Slow audio must never drag the video slow** — fix the audio first, don't stretch the picture to cover it. Per cue:
 
-**This step is slow on CPU.** RTF ~30-36 (a 5s cue takes ~3 min). A 141-cue video takes ~7 hours. Launch detached and poll the log. Tell the user this is the long step.
+| situation | audio | video |
+|---|---|---|
+| rate normal, audio ≤ window | untouched | speed up (drop redundant frames) |
+| rate normal, audio > window | untouched | stretch capped at **1.15x**; the audio tail bleeds into the following pause (see Step 5's adjuster) |
+| rate slow even after the Step 3a merge | fix audio first (ladder below) | only after the audio is normal |
+
+Speed-up ladder for slow cues, cheapest first: re-synthesize with rewritten text (merge; also pilot comma-rewriting — every `。` the model reads as a deliberate close, so "…，我也是，太熬人了" may pace like one sentence — unvalidated, cheap to try) → synthesize several takes and keep the fastest → DSP `atempo` (target rate = clamp(the film's own long-sentence median, 4.2, 5.5) syll/s; factor = target/measured computed **per cue**, capped at 1.6 — beyond that speech artifacts; silenceremove stays banned outright: it truncates normal speech). Any DSP pass requires the user's ear on samples first.
+
+**Post-synth rate gate (mandatory, before retime).** Run `python <skill>/scripts/rate_report.py <output-root> <name>` the moment synth finishes — it buckets per-cue syllables/audio-seconds, applies the policy target, and lists slow cues with suggested factors. WARN ⇒ pause and report to the user; do NOT proceed to retime/burn on flagged audio.
+
+**Cost is per CUE, not per minute of video.** Synthesis runs at ~3.5 min/cue regardless of cue length (RTF ~30-36; a 5s cue takes ~3 min); retime costs ~30-90s per *interpolated* segment. Quote the user `cues × 3.5 min + retime 1.5-5h` before starting — an 18-min talk with 240 cues is ~14h of synthesis where an 11-min/141-cue video is ~8h.
 
 Done when `dubbed/_segments/sent_NNNN.wav` exists for every cue AND each is > 1KB (not a truncated garbage file).
 
@@ -220,6 +239,8 @@ cook dub timeline <output-root> <name> --python <indextts-venv>/Scripts/python.e
 ```
 
 Done when `timeline.json` exists, every cue's `new_start < new_end`, no two cues overlap, and the total new duration is within ±50% of the raw (a healthy dub is 10-30% longer or shorter than the original).
+
+**Gap-absorbing cap (recommended whenever short cues exist).** After `cook dub timeline`, run `python <skill>/scripts/adjust_timeline.py <output-root>/dubbed/_full/timeline.json --max-stretch 1.15` BEFORE retime: it caps every cue's video stretch at 1.15x and lets the audio overrun bleed into the following pauses (the burned ZH subtitle window extends to the audio end automatically). `--first-cue-1x` keeps the opening line at exactly 1.0x — first impressions decide swipe-away; `--force1x-file <file>` forces 1.0x for a list of cue indices. It asserts tiling/monotonicity/audio-no-overlap; on violation it refuses rather than emit a broken timeline.
 
 ### Step 6 — Re-time the video segments + interpolate slow segments
 
@@ -288,4 +309,4 @@ Done when the video plays clean end-to-end. The run is not done until this passe
 
 The following details are pushed out of this file because they're consulted on demand:
 
-- **[REFERENCE.md](REFERENCE.md)** — IndexTTS2 install (the single-thread constraint, the garbage-audio bug, model download), the full term-retention list (which English terms stay English, which become Chinese, and the on-screen-content rule with examples), Demucs raw commands, the bi-directional re-timing math (ratio formula, the string-of-pearls construction proof), `minterpolate` parameter tuning and its artifact alternatives (blend mode, no-interpolation), the IndexTTS2 vs VoxCPM2 vs 豆包 API comparison (why IndexTTS2 won), and the Chinese-dub quality self-check (洋腔 detection, term-translation audit).
+- **[REFERENCE.md](REFERENCE.md)** — IndexTTS2 install (the single-thread constraint, the garbage-audio bug, model download), the full term-retention list (which English terms stay English, which become Chinese, and the on-screen-content rule with examples), the **timeline.json schema** (segment fields and invariants for tools that edit it), Demucs raw commands, the bi-directional re-timing math (ratio formula, the string-of-pearls construction proof), `minterpolate` parameter tuning and its artifact alternatives (blend mode, no-interpolation), the IndexTTS2 vs VoxCPM2 vs 豆包 API comparison (why IndexTTS2 won), and the Chinese-dub quality self-check (洋腔 detection, term-translation audit).
