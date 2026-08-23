@@ -8,7 +8,8 @@ Per cue: rate = ZH syllables / audio duration. Buckets: short <=8 syl,
 mid 9-20, long >20 (the model's own pacing bands). Verdict + per-cue
 suggested fix factors follow the pacing policy:
 
-    target = clamp(film's long-bucket median, 4.2, 5.5)  # syll/s
+    target = clamp(the film's long-bucket median, falling back to the mid
+    bucket when no long cues exist, 4.2, 5.5)  # syll/s
     factor = min(1.6, target / rate)                     # only where rate < target
 
 Usage:
@@ -70,7 +71,9 @@ def main():
     longs = [r for r in rows if r["syl"] > 20]
     mids = [r for r in rows if 9 <= r["syl"] <= 20]
     shorts = [r for r in rows if r["syl"] <= 8]
-    film_normal = med(longs) or med(mids)
+    # all-short films (pathological banter) have no longs/mids to anchor on:
+    # fall back to the floor so the report still renders and WARNs
+    film_normal = med(longs) or med(mids) or 4.2
     target = round(min(max(film_normal, 4.2), 5.5), 2)
     slow = []
     for r in rows:

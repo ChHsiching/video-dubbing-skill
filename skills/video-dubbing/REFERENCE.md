@@ -110,7 +110,7 @@ ratio = chinese_TTS_duration / english_window_duration
 - `ratio > 1`: Chinese is longer. The video segment gets **slowed down** (stretched) to match.
 - `ratio ≈ 1`: no change.
 
-The Chinese audio is **never** atempo-stretched. Every cue plays at its natural TTS speed.
+Normal-rate audio is **never** time-stretched or atempo'd — every cue plays at its natural TTS speed, and length mismatches are absorbed on the video side. Slow cues (the short-line pacing bug) are fixed per SKILL.md Step 4's speed-up ladder — the ladder's last rung is DSP `atempo` capped at 1.6x per cue, under the pacing policy, not a contradiction of it.
 
 ### The string-of-pearls timeline (overlap-proof)
 
@@ -132,7 +132,7 @@ The old approach (VoxCPM2 + atempo) stretched the audio to fit the window. Probl
 Re-timing the video instead:
 - 1.2x video speedup is invisible on talking-head footage (viewers don't notice frame-dropping at 60fps source).
 - 0.7x video slowdown is acceptable (the speaker moves a bit slower; with minterpolation it's smooth).
-- No audio artifacts ever — the TTS output is sacred.
+- Normal-rate audio stays untouched end to end — the only audio processing the pipeline ever does is the pacing policy's bounded per-cue speed-up of confirmed-slow cues.
 - The only limit is how much speedup viewers tolerate before the picture looks fast-forwarded (>1.5x is the threshold).
 
 ### Expected duration change
@@ -141,7 +141,7 @@ A faithful Chinese translation is typically 10-30% longer or shorter than the En
 
 ### timeline.json — schema
 
-`dubbed/_full/timeline.json` is the plan every later stage (retime, burn, subtitles, adjuster) consumes. Top level: `{"timeline": [segments], "total_new": float, "adjust": {...} (written by adjust_timeline.py)}`. Segment fields:
+`dubbed/_full/timeline.json` is the plan every later stage (retime, burn, subtitles, adjuster) consumes. Top level: `{"timeline": [segments], "total_new": float, "raw_dur": float, "adjust": {...} (written by adjust_timeline.py)}`. Segment fields:
 
 | field | kind | meaning |
 |---|---|---|
@@ -152,7 +152,7 @@ A faithful Chinese translation is typically 10-30% longer or shorter than the En
 | `text` | cue | the ZH sentence (same as translations_dub line `idx`) |
 | `en` | cue | the EN full sentence |
 | `new_start`, `new_end`, `new_dur` | both | the segment's window on the re-timed clock; segments tile back-to-back (next.new_start == prev.new_end) |
-| `speed` | cue | orig_dur / new_dur playback rate (0.45x = slowed, 1.2x = sped up) |
+| `speed` | both | orig_dur / new_dur playback rate (0.45x = slowed, 1.2x = sped up); gaps carry it too (1.0 unless an adjuster stretched them) |
 
 Invariants to respect when writing tools that edit this file: segments tile contiguously; starts strictly monotonic; a cue's audio (`zh_dur` from its `new_start`) never overlaps the next cue's audio.
 

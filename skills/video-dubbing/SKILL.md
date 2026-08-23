@@ -24,12 +24,12 @@ A new `dubbed/` stage folder added to the video's output directory, plus the fin
 3. `dubbed/_reference/ref.wav` — 14-30s clean clip of the original speaker (IndexTTS2 reference)
 4. `dubbed/vocals.wav` — original vocals, separated by Demucs
 5. `dubbed/no_vocals.wav` — original BGM + SFX (kept for inspection; only mixed when BGM is present)
-6. `dubbed/_segments/sent_NNNN.wav` — per-cue IndexTTS2 output (cache, re-usable)
+6. `dubbed/_full/_segments/sent_NNNN.wav` — per-cue IndexTTS2 output (cache, re-usable)
 7. `dubbed/_full/timeline.json` — the re-timed timeline (every cue's new start/end on the dubbed video's clock)
 8. `dubbed/_full/dub.wav` — the synthesized Chinese dub, placed on the new timeline
-9. `dubbed/_full/dubbing.srt` / `dubbing.merged.srt` — Chinese subtitles on the new timeline (working files; merged.srt is the shorten+merge-short version), with `dubbing.en.srt` (full-sentence English on the new timeline) and `dubbing.bilingual.srt` (the biliteral union that actually gets burned) beside them
+9. `dubbed/_full/dubbing.srt` / `dubbing.merged.srt` — Chinese subtitles on the new timeline (working files; merged.srt is the shorten+merge-short version), with `dubbing.en.srt` (full-sentence English on the new timeline), `dubbing.en.short.srt` / `dubbing.en.merged.srt` (its shorten+merge-short outputs) and `dubbing.bilingual.srt` (the biliteral union that actually gets burned) beside them
 10. `cooked/<name>.dubbed.mp4` — **the product**: raw video, re-timed, with Chinese dub + burned bilingual (ZH+EN) subtitles
-11. `cloud-srt/zh.dub.srt` and `cloud-srt/en.dub.srt` — **the upload subtitles**: copies of `dubbing.merged.srt` and `dubbing.en.srt`, for platforms that accept soft subs (B站云字幕). Named simply, they sit next to `cloud-srt/{zh,en}.srt` from `video-subtitle`.
+11. `cloud-srt/zh.dub.srt` and `cloud-srt/en.dub.srt` — **the upload subtitles**: copies of `dubbing.merged.srt` and `dubbing.en.merged.srt`, for platforms that accept soft subs (B站云字幕). Named simply, they sit next to `cloud-srt/{zh,en}.srt` from `video-subtitle`.
 
 The run is not done until the final video plays end-to-end with synced audio and readable subtitles — see Step 8.
 
@@ -52,13 +52,13 @@ This skill adds `dubbed/` (working directory) and writes the final products to `
 │   ├── zh.srt                      ← from video-subtitle (untouched)
 │   ├── en.srt                      ← from video-subtitle (untouched)
 │   ├── zh.dub.srt                  ← this skill's upload subtitle (copy of dubbing.merged.srt)
-│   └── en.dub.srt                  ← this skill's upload subtitle (copy of dubbing.en.srt)
+│   └── en.dub.srt                  ← this skill's upload subtitle (copy of dubbing.en.merged.srt)
 └── dubbed/                         ← this skill's working directory
     ├── _reference/
     │   └── ref.wav
-    ├── _segments/                  ← per-cue IndexTTS2 cache
     ├── _full/
     │   ├── timeline.json
+    │   ├── _segments/              ← per-cue IndexTTS2 cache
     │   ├── _vsegs/                 ← per-segment re-timed video chunks
     │   ├── dub.wav
     │   ├── video_adjusted.mp4      ← re-timed video (before burn)
@@ -154,7 +154,7 @@ The steps below describe what each stage does internally (so you can verify outp
 - **Keep technical terms in English where Chinese devs do** — spec, plan, prototype, agent, token, compact, Wayfinder, grilling, skill, session, ticket, branch, route, etc. See **[REFERENCE.md → "Term retention list"](REFERENCE.md)** for the full set.
 - **Keep English for anything shown on screen.** If the speaker says "I'll search for model" and types "model" into a search box visible in the video, keep "model" — translating it to "模型" while the screen shows "model" disorients the viewer. Same for UI labels, code, URLs, filenames.
 - **Translate concepts that have standard Chinese names** — 数据模型 (data model), 快照 (snapshot), 选择器 (picker), 选项 (option). When a term has a common Chinese name and isn't shown on screen, use it.
-- **Line count must equal cue count.** 141 English cues = 141 Chinese lines. Never merge or split lines — it desyncs the SRT generation.
+- **Line count must equal cue count.** 141 English cues = 141 Chinese lines — while translating, keep the two files index-aligned. The sanctioned way to change counts is Step 3a's `build_merge.py`, which rewrites both files together.
 
 Then generate the pre-re-timing SRT (timestamps inherited from `en.full.srt`):
 
@@ -174,7 +174,7 @@ python <skill>/scripts/make_zh_dub_srt.py <output-root>/transcript/<name>.en.ful
 2. **Proper-noun spelling** — names (people, products, companies) spelled exactly as the source uses them. "Claude" not "克劳德", "IndexTTS" not "索引TTS", unless a standard Chinese name genuinely exists.
 3. **TTS readability** — will IndexTTS2 pronounce this naturally? No awkward character sequences, no orphaned punctuation, numbers and symbols written the way they should be spoken.
 
-The review must happen **before** Step 4 (synth) because TTS is the expensive step (~7 hours for a 141-cue video) — a translation error caught after synth means re-synthesizing every corrected cue. **Read every line of both files; do not pattern-match against known-error shapes** (regex-style scanning for "looks wrong" misses the subtle errors that actually ship — a dropped 的, a misspelled proper noun, a clause that drifted). The subagent's completion criterion: it has read every cue pair end-to-end and either confirms each is correct or lists the specific cue indices that need fixing. Fix anything it flags, then re-run the gate on the changed lines only.
+The review must happen **before** Step 4 (synth) because TTS is the expensive step (~3.5 min per cue — 141 cues ≈ 8h) — a translation error caught after synth means re-synthesizing every corrected cue. **Read every line of both files; do not pattern-match against known-error shapes** (regex-style scanning for "looks wrong" misses the subtle errors that actually ship — a dropped 的, a misspelled proper noun, a clause that drifted). The subagent's completion criterion: it has read every cue pair end-to-end and either confirms each is correct or lists the specific cue indices that need fixing. Fix anything it flags, then re-run the gate on the changed lines only.
 
 Done when `translations_dub.txt` has the same line count as `en.full.srt` cues, `<name>.zh.dub.srt` exists, both self-review passes pass, **and** the fan-out subagent review has confirmed every cue.
 
@@ -185,7 +185,9 @@ IndexTTS2 renders standalone short lines (≤8 ZH syllables) at narration pace (
 0. **Write longer lines while translating.** Prefer a naturally fuller sentence over clipped shorthand ("这一段是真的太熬人了" not "太熬人了") — no padding, no filler, but don't compress to fragments the model will read like a title card.
 1. **Merge what remains short.** Run `python <skill>/scripts/build_merge.py <output-root> <name>` — it groups adjacent cues into 9-24-syllable units (gap ≤1.5s, band ≤24 syllables), backs up originals as `*.v1`, and pre-populates the audio cache from a previous synth (`_segments_orig`) so `cook dub synth` only fills the merged groups. **Merged groups must be synthesized with the SAME reference clip as the reused audio** — swapping references changes the timbre audibly. Merged audio plays as one unit; the subtitle pipeline re-splits it for display automatically.
 
-**Pre-synth ear gate (mandatory before committing the run).** Synthesis costs ~3.5 min/cue (240 cues ≈ 14h) and nothing downstream hears audio — the only gate before that spend is the user's ear. Synthesize a 3-sentence pilot with the chosen reference (shortest interjection ×2 + one mid sentence, ~10 min single-threaded), hand the wavs to the user, and get an explicit OK on voice AND pace. Reference choice shapes delivery pace, not just timbre: prefer a mid-tempo explanatory section — `extract_reference.py` picking the *longest* continuous speech systematically selects the slowest, most deliberate section a talk contains.
+**Pre-synth ear gate (mandatory before committing the run).** Synthesis costs ~3.5 min/cue (240 cues ≈ 14h) and nothing downstream hears audio — the only gate before that spend is the user's ear. Build the pilot as a scratch run: a temp output-root holding a 3-line `en.full.srt` + `translations_dub.txt` (shortest interjection ×2 + one mid sentence), the chosen `ref.wav` in `dubbed/_reference/`, then `cook dub synth` on it (~10 min single-threaded). Hand the wavs to the user and get an explicit OK on voice AND pace. Reference choice shapes delivery pace, not just timbre: prefer a mid-tempo explanatory section — `extract_reference.py` picking the *longest* continuous speech systematically selects the slowest, most deliberate section a talk contains.
+
+Done when `*.v1` backups exist (when merging ran), `translations_dub.txt` line count equals `en.full.srt` cue count post-merge, and the ear gate has an explicit user OK on voice AND pace.
 
 ### Step 4 — Synthesize the Chinese dub (the slow step)
 
@@ -195,7 +197,7 @@ IndexTTS2 synthesizes each cue. **Single-threaded only** — multi-threaded infe
 cook dub synth <output-root> <name> --python <indextts-venv>/Scripts/python.exe
 ```
 
-`stage_synth` sets `OMP_NUM_THREADS=1` + `torch.set_num_threads(1)` before importing torch (load-bearing — order matters), loads IndexTTS2 once, then synthesizes each cue. Output is `dubbed/_full/_segments/sent_NNNN.wav`, cached by cue index — re-running only re-synthesizes cues whose text changed.
+`stage_synth` sets `OMP_NUM_THREADS=1` + `torch.set_num_threads(1)` before importing torch (load-bearing — order matters), loads IndexTTS2 once, then synthesizes each cue. Output is `dubbed/_full/_segments/sent_NNNN.wav`, cached by cue index — the cache is NOT text-aware: a cue whose text (or reference) changed re-synthesizes only after you delete its cached wav.
 
 **Pacing policy (replaces the old blanket DSP ban).** Two iron rules: **(1) normal-rate audio is untouchable** — never time-stretch, never atempo; length mismatches are absorbed on the video side. **(2) Slow audio must never drag the video slow** — fix the audio first, don't stretch the picture to cover it. Per cue:
 
@@ -205,9 +207,9 @@ cook dub synth <output-root> <name> --python <indextts-venv>/Scripts/python.exe
 | rate normal, audio > window | untouched | stretch capped at **1.15x**; the audio tail bleeds into the following pause (see Step 5's adjuster) |
 | rate slow even after the Step 3a merge | fix audio first (ladder below) | only after the audio is normal |
 
-Speed-up ladder for slow cues, cheapest first: re-synthesize with rewritten text (merge; also pilot comma-rewriting — every `。` the model reads as a deliberate close, so "…，我也是，太熬人了" may pace like one sentence — unvalidated, cheap to try) → synthesize several takes and keep the fastest → DSP `atempo` (target rate = clamp(the film's own long-sentence median, 4.2, 5.5) syll/s; factor = target/measured computed **per cue**, capped at 1.6 — beyond that speech artifacts; silenceremove stays banned outright: it truncates normal speech). Any DSP pass requires the user's ear on samples first.
+Speed-up ladder for slow cues, cheapest first: re-synthesize with rewritten text (delete the cue's cached wav first — the cache is index-keyed; merge, and pilot comma-rewriting — every `。` the model reads as a deliberate close, so "…，我也是，太熬人了" may pace like one sentence — unvalidated, cheap to try) → synthesize several takes and keep the fastest → DSP `atempo` using the per-cue factors `rate_report.py` prints (target = the film's long-sentence median clamped to 4.2-5.5 syll/s, factor ≤ 1.6 — beyond that speech artifacts; silenceremove stays banned outright: it truncates normal speech). Any DSP pass requires the user's ear on samples first.
 
-**Post-synth rate gate (mandatory, before retime).** Run `python <skill>/scripts/rate_report.py <output-root> <name>` the moment synth finishes — it buckets per-cue syllables/audio-seconds, applies the policy target, and lists slow cues with suggested factors. WARN ⇒ pause and report to the user; do NOT proceed to retime/burn on flagged audio.
+**Post-synth rate gate (mandatory, before retime).** Run `python <skill>/scripts/rate_report.py <output-root> <name>` right after `cook dub timeline` (Step 5) builds the timeline.json it reads — it buckets per-cue syllables/audio-seconds, applies the policy target, and lists slow cues with suggested factors. `VERDICT: WARN` (exit 1) ⇒ pause and report to the user; `VERDICT: PASS` ⇒ proceed — the listed slow cues are inputs to the speed-up ladder, not blockers.
 
 **Cost is per CUE, not per minute of video.** Synthesis runs at ~3.5 min/cue regardless of cue length (RTF ~30-36; a 5s cue takes ~3 min); retime costs ~30-90s per *interpolated* segment. Quote the user `cues × 3.5 min + retime 1.5-5h` before starting — an 18-min talk with 240 cues is ~14h of synthesis where an 11-min/141-cue video is ~8h.
 
@@ -240,7 +242,7 @@ cook dub timeline <output-root> <name> --python <indextts-venv>/Scripts/python.e
 
 Done when `timeline.json` exists, every cue's `new_start < new_end`, no two cues overlap, and the total new duration is within ±50% of the raw (a healthy dub is 10-30% longer or shorter than the original).
 
-**Gap-absorbing cap (recommended whenever short cues exist).** After `cook dub timeline`, run `python <skill>/scripts/adjust_timeline.py <output-root>/dubbed/_full/timeline.json --max-stretch 1.15` BEFORE retime: it caps every cue's video stretch at 1.15x and lets the audio overrun bleed into the following pauses (the burned ZH subtitle window extends to the audio end automatically). `--first-cue-1x` keeps the opening line at exactly 1.0x — first impressions decide swipe-away; `--force1x-file <file>` forces 1.0x for a list of cue indices. It asserts tiling/monotonicity/audio-no-overlap; on violation it refuses rather than emit a broken timeline.
+**Gap-absorbing cap (recommended whenever short cues exist).** After `cook dub timeline`, run `python <skill>/scripts/adjust_timeline.py <output-root>/dubbed/_full/timeline.json --max-stretch 1.15` BEFORE retime: it caps every cue's video stretch at 1.15x and lets the audio overrun bleed into the following pauses (the burned ZH subtitle window extends to the audio end automatically). `--first-cue-1x` keeps the opening line at exactly 1.0x — first impressions decide swipe-away; `--force1x-file <file>` (one cue index per line) forces 1.0x for a listed set of cues. It asserts tiling/monotonicity/audio-no-overlap; on violation it refuses rather than emit a broken timeline.
 
 ### Step 6 — Re-time the video segments + interpolate slow segments
 
