@@ -63,8 +63,11 @@ This skill adds `dubbed/` (working directory) and writes the final products to `
     │   ├── dub.wav
     │   ├── video_adjusted.mp4      ← re-timed video (before burn)
     │   ├── dubbing.srt             ← working file (ZH, pre-shorten)
-    │   ├── dubbing.en.srt          ← working file (full-sentence EN on the new clock)
+    │   ├── dubbing.short.srt       ← working file (ZH, shorten output)
     │   ├── dubbing.merged.srt      ← working file (ZH, post-shorten; copied to cloud-srt)
+    │   ├── dubbing.en.srt          ← working file (full-sentence EN on the new clock)
+    │   ├── dubbing.en.short.srt    ← working file (EN, shorten output)
+    │   ├── dubbing.en.merged.srt   ← working file (EN, post-shorten; copied to cloud-srt)
     │   └── dubbing.bilingual.srt   ← working file (biliteral union; what gets burned)
     ├── vocals.wav
     └── no_vocals.wav
@@ -187,7 +190,7 @@ IndexTTS2 renders standalone short lines (≤8 ZH syllables) at narration pace (
 
 **Pre-synth ear gate (mandatory before committing the run).** Synthesis costs ~3.5 min/cue (240 cues ≈ 14h) and nothing downstream hears audio — the only gate before that spend is the user's ear. Build the pilot as a scratch run: a temp output-root holding a 3-line `en.full.srt` + `translations_dub.txt` (shortest interjection ×2 + one mid sentence), the chosen `ref.wav` in `dubbed/_reference/`, then `cook dub synth` on it (~10 min single-threaded). Hand the wavs to the user and get an explicit OK on voice AND pace. Reference choice shapes delivery pace, not just timbre: prefer a mid-tempo explanatory section — `extract_reference.py` picking the *longest* continuous speech systematically selects the slowest, most deliberate section a talk contains.
 
-Done when `*.v1` backups exist (when merging ran), `translations_dub.txt` line count equals `en.full.srt` cue count post-merge, and the ear gate has an explicit user OK on voice AND pace.
+Done when `*.v1` backups exist (when merging ran), `translations_dub.txt` line count equals `en.full.srt` cue count post-merge, `<name>.zh.dub.srt` regenerated from the merged files when merging ran (re-run `make_zh_dub_srt.py` — the Step 3 output was built from pre-merge inputs), and the ear gate has an explicit user OK on voice AND pace.
 
 ### Step 4 — Synthesize the Chinese dub (the slow step)
 
@@ -207,9 +210,9 @@ cook dub synth <output-root> <name> --python <indextts-venv>/Scripts/python.exe
 | rate normal, audio > window | untouched | stretch capped at **1.15x**; the audio tail bleeds into the following pause (see Step 5's adjuster) |
 | rate slow even after the Step 3a merge | fix audio first (ladder below) | only after the audio is normal |
 
-Speed-up ladder for slow cues, cheapest first: re-synthesize with rewritten text (delete the cue's cached wav first — the cache is index-keyed; merge, and pilot comma-rewriting — every `。` the model reads as a deliberate close, so "…，我也是，太熬人了" may pace like one sentence — unvalidated, cheap to try) → synthesize several takes and keep the fastest → DSP `atempo` using the per-cue factors `rate_report.py` prints (target = the film's long-sentence median clamped to 4.2-5.5 syll/s, factor ≤ 1.6 — beyond that speech artifacts; silenceremove stays banned outright: it truncates normal speech). Any DSP pass requires the user's ear on samples first.
+Speed-up ladder for slow cues, cheapest first: re-synthesize with rewritten text (delete the cue's cached wav first — the cache is index-keyed; merge, and pilot comma-rewriting — every `。` the model reads as a deliberate close, so "…，我也是，太熬人了" may pace like one sentence — unvalidated, cheap to try) → synthesize several takes and keep the fastest → DSP `atempo` using the per-cue factors `rate_report.py` prints (target clamped to 4.2-5.5 syll/s; factor ≤ 1.6 — beyond that speech artifacts; silenceremove stays banned outright: it truncates normal speech). Any DSP pass requires the user's ear on samples first.
 
-**Post-synth rate gate (mandatory, before retime).** Run `python <skill>/scripts/rate_report.py <output-root> <name>` right after `cook dub timeline` (Step 5) builds the timeline.json it reads — it buckets per-cue syllables/audio-seconds, applies the policy target, and lists slow cues with suggested factors. `VERDICT: WARN` (exit 1) ⇒ pause and report to the user; `VERDICT: PASS` ⇒ proceed — the listed slow cues are inputs to the speed-up ladder, not blockers.
+**Post-synth rate gate (mandatory, before retime).** Run `python <skill>/scripts/rate_report.py <output-root> <name>` right after `cook dub timeline` (Step 5) builds the timeline.json it reads — it buckets per-cue syllables/audio-seconds, applies the policy target, and lists slow cues with suggested factors. `VERDICT: WARN` (exit 1) ⇒ pause and report to the user; `VERDICT: PASS` ⇒ proceed — the listed slow cues are inputs to the speed-up ladder, not blockers. **Any ladder fix that changes audio (re-synthesis or DSP) invalidates timeline.json** — its `zh_dur` values were measured from the wavs you just replaced. After audio fixes: re-run `cook dub timeline`, re-run `adjust_timeline.py`, re-run `rate_report.py`; only then proceed to retime (retime validates cached `_vsegs` durations against the current plan and regenerates stale ones automatically).
 
 **Cost is per CUE, not per minute of video.** Synthesis runs at ~3.5 min/cue regardless of cue length (RTF ~30-36; a 5s cue takes ~3 min); retime costs ~30-90s per *interpolated* segment. Quote the user `cues × 3.5 min + retime 1.5-5h` before starting — an 18-min talk with 240 cues is ~14h of synthesis where an 11-min/141-cue video is ~8h.
 
@@ -266,7 +269,7 @@ Done when `_vsegs/v_NNNN.mp4` exists for every timeline segment AND the segment 
 
 Concatenate the re-timed video segments, place the Chinese audio on the new timeline, generate subtitles, and burn.
 
-**7a. Concat segments + place audio** — `cook dub burn` runs the full assembly (concat re-timed segments, place Chinese audio on the new timeline via `adelay`, generate subtitles, burn) in one stage:
+**7a. Concat segments + place audio** — `cook dub burn` runs the full assembly (concat re-timed segments, place Chinese audio on the new timeline by sequential pad+concatenate assembly, generate subtitles, burn) in one stage:
 
 ```bash
 cook dub burn <output-root> <name> --python <indextts-venv>/Scripts/python.exe

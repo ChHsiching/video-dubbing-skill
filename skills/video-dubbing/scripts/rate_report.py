@@ -8,8 +8,8 @@ Per cue: rate = ZH syllables / audio duration. Buckets: short <=8 syl,
 mid 9-20, long >20 (the model's own pacing bands). Verdict + per-cue
 suggested fix factors follow the pacing policy:
 
-    target = clamp(the film's long-bucket median, falling back to the mid
-    bucket when no long cues exist, 4.2, 5.5)  # syll/s
+    target = clamp(median rate of long cues — the mid bucket when the film
+    has no long cues, else 4.2 — into 4.2..5.5)  # syll/s
     factor = min(1.6, target / rate)                     # only where rate < target
 
 Usage:

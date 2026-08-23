@@ -92,6 +92,11 @@ def main():
         seg["new_start"] = round(start, 3)
         seg["new_end"] = round(start + dur, 3)
         seg["new_dur"] = round(dur, 3)
+        # keep `speed` honest for schema consumers: it is defined as
+        # orig_dur / new_dur, so every re-timed segment (capped cue,
+        # stretched gap, sped-up cue) must carry its new rate
+        if dur > 0:
+            seg["speed"] = round((seg["orig_end"] - seg["orig_start"]) / dur, 4)
         clock = seg["new_end"]
 
     data["total_new"] = segs[-1]["new_end"]
