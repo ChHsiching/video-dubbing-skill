@@ -17,7 +17,7 @@ npx skills add ChHsiching/video-dubbing-skill
 pip install video-cook[all]                  # cook CLI (pulls whisperx + yt-dlp)
 ```
 
-The dub pipeline also needs **IndexTTS2** (the voice-cloning TTS) and **Demucs** (vocal separation), which live in a separate venv because their heavy deps (torch CPU build) are isolated from cook's own Python. See [`REFERENCE.md`](skills/video-dubbing/REFERENCE.md) for the exact venv setup and the single-thread constraint IndexTTS2 requires.
+The dub pipeline also needs **IndexTTS2** (the voice-cloning TTS), **Demucs** (vocal separation), and **whisperX** (reference extraction), which live in a separate venv because their heavy deps are isolated from cook's own Python. See [`REFERENCE.md`](skills/video-dubbing/REFERENCE.md) for the exact venv setup and the single-thread constraint IndexTTS2 requires.
 
 ## Use
 
