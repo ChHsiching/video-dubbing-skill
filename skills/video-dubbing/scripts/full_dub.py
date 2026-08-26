@@ -656,10 +656,10 @@ def stage_burn(output_root, name: str, keep_subs: bool = False):
     # --keep-subs skips 4c + 4d's regeneration entirely and reuses the
     # subtitle files already on disk — the recovery path for hand-edited
     # dubbing.bilingual.srt / merged SRTs after the post-burn quality gate
-    # (SKILL.md Step 7). Regenerating
-    # from source would silently wipe those edits (split points are computed
-    # by shorten, not stored in any input file). The ASS is always rebuilt
-    # from the on-disk bilingual SRT so style stays in sync with the pipeline.
+    # (SKILL.md Step 7). Regenerating from source would silently wipe those
+    # edits (split points are computed by shorten, not stored in any input
+    # file). The ASS is always rebuilt from the on-disk bilingual SRT so
+    # style stays in sync with the pipeline.
     if keep_subs:
         log("  4c/4d: --keep-subs — reusing on-disk subtitle files (ass + burn only)")
     else:

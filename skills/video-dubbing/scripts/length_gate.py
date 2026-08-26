@@ -10,7 +10,7 @@ Reads transcript/<name>.en.full.srt (cue windows) + transcript/translations_dub.
   2. over-length: estimated speech duration exceeds the cue's absorption
      budget (1.15x stretch + 90% of the following pause). The excess becomes
      a held frame — invisible below ~0.5s, a visible freeze beyond — so
-     over-long Chinese is where frozen openings come from. Compress the
+     over-long Chinese is where freezes come from. Compress the
      translation here, not in retime.
 
 Syllable counting matches rate_report.py so the two tools speak one metric.
@@ -27,9 +27,10 @@ import re
 import sys
 from pathlib import Path
 
-# Speech-rate estimate, bucketed the way rate_report measures real output:
-# short lines (<=8 sylls) synthesize at narration pace (~3.0 syll/s), mid at
-# ~4.2, long (>20) at ~4.9. A single flat rate mis-estimates both ends.
+# Speech-rate PLANNING estimate, bucketed on rate_report's observed bands:
+# short lines (<=8 sylls) plan at ~3.0 syll/s (observed narration pace ~2.6;
+# 3.0 is rate_report's WARN boundary), mid at ~4.2 (observed ~4.3), long
+# (>20) at ~4.9. A single flat rate mis-estimates both ends.
 def est_duration(syl: int) -> float:
     if syl <= 8:
         return syl / 3.0

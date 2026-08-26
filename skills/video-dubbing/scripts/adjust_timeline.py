@@ -124,11 +124,11 @@ def main():
     print("total_new %.2fs | tiling %s | audio-no-overlap %s | monotonic %s"
           % (data["total_new"], ok_tile, ok_audio, ok_mono))
 
-    # Freeze-frame advisory: the gap-absorbing design assumes stretched
-    # pauses read as natural hesitations — true around 1.2-2x, visibly a
-    # frozen frame beyond ~3x (a 0.06s pause stretched 23x held for 1.4s
-    # on a shipped opening). Name the extreme gaps so the translator can
-    # shorten the neighbouring Chinese instead of shipping the freeze.
+    # Freeze advisory: the gap-absorbing design assumes stretched pauses read
+    # as natural hesitations — true around 1.2-2x, visibly a freeze beyond
+    # ~3x (a 0.06s pause stretched 23x held for 1.4s on a shipped opening).
+    # Name the extreme gaps so the translator can shorten the neighbouring
+    # Chinese instead of shipping the freeze.
     deep = [(i, (s["orig_end"] - s["orig_start"]) / s["new_dur"])
             for i, s in enumerate(segs)
             if s["kind"] == "gap" and s["new_dur"] > 0
