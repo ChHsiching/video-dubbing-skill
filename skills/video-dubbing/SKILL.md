@@ -305,7 +305,7 @@ This gate sits **after** `cook dub burn` (the merged subtitles only exist once b
 
 **Style parity check (with every re-burn).** Content gates read text; a burned video also carries layout. After any burn, extract one frame at a speaking timestamp and compare the bottom bar against the bilingual release's bar (same ZH 64px line above EN 44px, text spread across the 220px bar) — a regressed ASS (text squeezed to one band, bar looking emptier) survived a content-only gate before and shipped. The mechanical form: diff the `Style:` lines and the `PlayResX/Y` header of `subtitle/<name>.bilingual.bar.ass` and `<output-root>/dubbed/_full/burn.ass` — they must be identical (the bar height lives in PlayResY, not the Style: lines).
 
-Done when `cooked/<name>.dubbed.mp4` exists, its duration matches the burn log's actual total (the measured vseg clock 4a-0 rebuilds; plan drift from frame quantization is normal and logged) ±0.5s, a spot-check frame at a speaking timestamp shows bilingual subtitles rendered in the bottom bar (ZH above EN), **and** the post-burn quality gate above has cleared, **and** the `Style:` and `PlayRes` lines of `subtitle/<name>.bilingual.bar.ass` and `dubbed/_full/burn.ass` are identical.
+Done when `cooked/<name>.dubbed.mp4` exists, its duration matches the `actual total` line in `dubbed/burn.log` (the measured vseg clock 4a-0 rebuilds; plan drift from frame quantization is normal and logged) ±0.5s, a spot-check frame at a speaking timestamp shows bilingual subtitles rendered in the bottom bar (ZH above EN), **and** the post-burn quality gate above has cleared, **and** the `Style:` and `PlayRes` lines of `subtitle/<name>.bilingual.bar.ass` and `dubbed/_full/burn.ass` are identical.
 
 ### Step 8 — Verify
 
