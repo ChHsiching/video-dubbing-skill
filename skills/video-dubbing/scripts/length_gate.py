@@ -18,7 +18,8 @@ Exit 0 = no short/must-fix lines (an advisory-only run also exits 0);
 exit 1 = short or must-fix lines listed (fix them, rerun).
 
 Usage: python length_gate.py <output_root> <name>
-Run AFTER writing translations_dub.txt and BEFORE build_merge / synth.
+Run AFTER writing translations_dub.txt and BEFORE the Step 3 subagent
+review, build_merge, and synth (it is cheap; the review is not).
 """
 from __future__ import annotations
 

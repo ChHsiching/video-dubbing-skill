@@ -115,7 +115,6 @@ def test_concat_invalid_when_expected_zero():
 def test_missing_vsegs_reported():
     """_verify_all_vsegs returns the list of indices whose vseg is missing or
     invalid, so stage_retime can name them in its error message."""
-    tmp = Path(sys.path[0]) if False else Path("/tmp/nonexistent_test_dir_xyz")
     # Simulate: timeline has 5 segments; only v_0000 and v_0002 exist & valid.
     import tempfile
     with tempfile.TemporaryDirectory() as td:

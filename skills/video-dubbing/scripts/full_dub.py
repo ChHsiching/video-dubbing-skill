@@ -486,10 +486,10 @@ def stage_retime(output_root, name: str):
 # ===== Stage 4: concat + audio + subtitles + burn =====
 
 # The dub burns bilingual subtitles in the same bottom-bar layout as the
-# bilingual release from video-subtitle: EN (full sentences mapped onto the
-# dub's re-timed clock) over ZH (shorten/merge-short fragments). Font sizes
-# and margins are subtitles.py's bottom-bar defaults (ZH 64 / EN 44, marginv
-# 140) — no overrides here, so the two releases can't drift apart.
+# bilingual release from video-subtitle: ZH (shorten/merge-short fragments)
+# on top, EN (full sentences mapped onto the dub's re-timed clock) below.
+# Font sizes and margins are subtitles.py's bottom-bar defaults (ZH 64 /
+# EN 44, marginv 140) — no overrides here, so the two releases can't drift.
 _DUB_BAR = 220
 
 
@@ -654,9 +654,9 @@ def stage_burn(output_root, name: str, keep_subs: bool = False):
 
     # 4c: generate SRTs (pre-shorten, on the new timeline)
     # --keep-subs skips 4c + 4d's regeneration entirely and reuses the
-    # subtitle files already on disk — the recovery path after the post-burn
-    # quality gate (SKILL.md Step 7)
-    # edited dubbing.bilingual.srt / the merged SRTs by hand. Regenerating
+    # subtitle files already on disk — the recovery path for hand-edited
+    # dubbing.bilingual.srt / merged SRTs after the post-burn quality gate
+    # (SKILL.md Step 7). Regenerating
     # from source would silently wipe those edits (split points are computed
     # by shorten, not stored in any input file). The ASS is always rebuilt
     # from the on-disk bilingual SRT so style stays in sync with the pipeline.
