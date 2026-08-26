@@ -9,7 +9,7 @@ Usage (CLI):
   python full_dub.py synth    <output-root> <name>   # stage 1: TTS synthesis
   python full_dub.py timeline <output-root> <name>   # stage 2: timeline math
   python full_dub.py retime   <output-root> <name>   # stage 3: video segments + interpolation
-  python full_dub.py burn     <output-root> <name>   # stage 4: concat + audio + subtitles + burn
+  python full_dub.py burn     <output-root> <name> [--keep-subs]  # stage 4: concat + audio + subtitles + burn
   python full_dub.py full     <output-root> <name>   # all four, in sequence
 
 Usage (from cook via importlib):
@@ -654,7 +654,8 @@ def stage_burn(output_root, name: str, keep_subs: bool = False):
 
     # 4c: generate SRTs (pre-shorten, on the new timeline)
     # --keep-subs skips 4c + 4d's regeneration entirely and reuses the
-    # subtitle files already on disk — the recovery path after a Gate C fix
+    # subtitle files already on disk — the recovery path after the post-burn
+    # quality gate (SKILL.md Step 7)
     # edited dubbing.bilingual.srt / the merged SRTs by hand. Regenerating
     # from source would silently wipe those edits (split points are computed
     # by shorten, not stored in any input file). The ASS is always rebuilt
@@ -722,7 +723,7 @@ def stage_burn(output_root, name: str, keep_subs: bool = False):
         # biliteral unions the (now shortened) EN with the fragmented ZH; when a
         # span from either language crosses the other's breakpoint its text
         # repeats across the cues it spans — the bilingual release's structural
-        # repetition. Flag with care in Gate C: repetition on either side is the
+        # repetition. Flag with care in the post-burn quality gate: repetition on either side is the
         # design, not a defect.
         _run_subs(subs_mod, ["biliteral", str(en_merged_srt),
                              str(merged_srt), str(bilingual_srt)])

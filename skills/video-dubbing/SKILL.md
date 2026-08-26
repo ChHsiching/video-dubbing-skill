@@ -171,6 +171,14 @@ python <skill>/scripts/make_zh_dub_srt.py <output-root>/transcript/<name>.en.ful
 - **Pass 1**: read every line as a spoken sentence. Does it sound like something a person would say?
 - **Pass 2**: scan for term-retention errors — every on-screen label, search term, UI element kept in English; every standard-concept term in Chinese. Cross-check against the term-retention list in REFERENCE.md.
 
+**Length gate — mechanical, run it after writing the translation and before the subagent review** (it is pure arithmetic and takes a second):
+
+```bash
+python <skill>/scripts/length_gate.py <output-root> <name>
+```
+
+It cross-checks every line against its cue's absorption budget (1.15x stretch + 90% of the following pause, at speech rates bucketed on rate_report's bands) and exits 1 listing: **short lines** (≤8 syllables — IndexTTS2's narration-pace trap, rewrite fuller or let Step 3a merge) and **must-fix lines** (required freeze > 2s — the picture will visibly halt; tighten the translation). A 0.5-2s advisory band is reported as a count: scattered pauses of that size read naturally, clusters and openings do not. Rewrite the flagged lines, rerun until the short and must-fix lists are empty (advisory-only passes).
+
 **Quality gate — fan-out subagent review (mandatory, before synth).** The self-review passes above are you checking your own work; this gate is a **separate subagent** reviewing it cold. Fan out a subagent with read access to both `<name>.en.full.srt` and `translations_dub.txt`, and ask it to check, for every cue:
 
 1. **Translation accuracy** — does the Chinese faithfully convey the English sentence's meaning? No dropped clauses, no added content, no mistranslations.
@@ -178,14 +186,6 @@ python <skill>/scripts/make_zh_dub_srt.py <output-root>/transcript/<name>.en.ful
 3. **TTS readability** — will IndexTTS2 pronounce this naturally? No awkward character sequences, no orphaned punctuation, numbers and symbols written the way they should be spoken.
 
 The review must happen **before** Step 4 (synth) because TTS is the expensive step (~3.5 min per cue — 141 cues ≈ 8h) — a translation error caught after synth means re-synthesizing every corrected cue. **Read every line of both files; do not pattern-match against known-error shapes** (regex-style scanning for "looks wrong" misses the subtle errors that actually ship — a dropped 的, a misspelled proper noun, a clause that drifted). The subagent's completion criterion: it has read every cue pair end-to-end and either confirms each is correct or lists the specific cue indices that need fixing. Fix anything it flags, then re-run the gate on the changed lines only.
-
-**Length gate — mechanical, run it before the subagent review** (it is pure arithmetic and takes a second):
-
-```bash
-python <skill>/scripts/length_gate.py <output-root> <name>
-```
-
-It cross-checks every line against its cue's absorption budget (1.15x stretch + 90% of the following pause, at speech rates bucketed on rate_report's bands) and exits 1 listing: **short lines** (≤8 syllables — IndexTTS2's narration-pace trap, rewrite fuller or let Step 3a merge) and **must-fix lines** (required freeze > 2s — the picture will visibly halt; tighten the translation). A 0.5-2s advisory band is reported as a count: scattered pauses of that size read naturally, clusters and openings do not. Rewrite the flagged lines, rerun until the short and must-fix lists are empty (advisory-only passes).
 
 Done when `translations_dub.txt` has the same line count as `en.full.srt` cues, `<name>.zh.dub.srt` exists, the length gate has no short/must-fix lines, both self-review passes pass, **and** the fan-out subagent review has confirmed every cue.
 
@@ -266,7 +266,7 @@ cook dub retime <output-root> <name> --python <indextts-venv>/Scripts/python.exe
 For each segment:
 - **Speed-up segment (ratio<1)**: `setpts=factor*PTS` only. The source has redundant frames at 60fps; dropping them is invisible.
 - **Slow-down segment (ratio>1)**: `setpts=factor*PTS,minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:me=epzs:vsbmc=1`. The `setpts` stretches the timeline (each source frame displays longer), then `minterpolate` inserts motion-compensated intermediate frames to maintain 60fps. Without interpolation, slowed segments look choppy (15-35fps effective).
-- **Every segment pins its frame count** (`-frames:v round(new_dur*60)`), so durations land on the plan instead of wherever ffmpeg's frame duplication stops; sub-frame spans (a 0.02s gap stretched 20x+) render as a held frame via extract+loop — a static pause either way. Together these close the extreme-stretch length-mismatch class (the 41-segment incident): output duration is now the pinned frame count ±1 frame, and the per-segment probe/retry stays as a backstop for corrupt output.
+- **Every segment pins its frame count** (`-frames:v round(new_dur*60)`), so durations land on the plan instead of wherever ffmpeg's frame duplication stops; sub-frame spans (a 0.02s gap stretched 20x+) render as a held frame via extract+loop — a static pause either way. Together these close the extreme-stretch length-mismatch class (the 41-segment incident): output duration now stays within the 0.08s validation tolerance of the plan, and the per-segment probe/retry remains as a backstop for corrupt output.
 
 **Known limitation**: `minterpolate`'s optical-flow estimation fails on fast non-rigid motion — waving hands leave after-image artifacts (two ghosted hands). This is an architectural limitation of optical flow, not a tunable parameter. On talking-head videos (the common case) it's acceptable; on action footage it's not. The user has accepted this trade-off — see REFERENCE.md for alternatives that don't (no interpolation = choppy but no artifacts).
 
@@ -282,11 +282,11 @@ Concatenate the re-timed video segments, place the Chinese audio on the new time
 
 ```bash
 cook dub burn <output-root> <name> --python <indextts-venv>/Scripts/python.exe
-# recovery after a Gate C fix edited dubbed/_full/ subtitle files by hand:
+# recovery after Step 7's post-burn quality gate edited dubbed/_full/ subtitle files by hand:
 cook dub burn <output-root> <name> --python <indextts-venv>/Scripts/python.exe --keep-subs
 ```
 
-Produces `cooked/<name>.dubbed.mp4` and `video_adjusted.mp4` + `dub.wav` (intermediates under `dubbed/_full/`). A plain burn regenerates every subtitle file from source — use `--keep-subs` when you have hand-edited `dubbing.bilingual.srt` / the merged SRTs, or the regeneration wipes those edits (split points are computed by `shorten`, not stored in any input file you can fix upstream). The ASS is always rebuilt from the on-disk bilingual SRT — that file is where burned-picture fixes must land; merged-SRT edits propagate only to `cloud-srt/`.
+Produces `cooked/<name>.dubbed.mp4` and `video_adjusted.mp4` + `dub.wav` (intermediates under `dubbed/_full/`). A plain burn regenerates every subtitle file from source — use `--keep-subs` when you have hand-edited `dubbing.bilingual.srt` / the merged SRTs, or the regeneration wipes those edits (split points are computed by `shorten`, not stored in any input file you can fix upstream). The ASS is always rebuilt from the on-disk bilingual SRT — burned-picture fixes go in that file, with `--keep-subs` so they survive the re-burn; merged-SRT edits propagate only to `cloud-srt/`.
 
 **7b–7c are inside `cook dub burn`.** The same command also generates the subtitles and burns them — you do not run those steps by hand. It runs the same pipeline as `video-subtitle`'s bilingual release, on the dub's re-timed clock:
 
@@ -305,7 +305,7 @@ This gate sits **after** `cook dub burn` (the merged subtitles only exist once b
 
 **Style parity check (with every re-burn).** Content gates read text; a burned video also carries layout. After any burn, extract one frame at a speaking timestamp and compare the bottom bar against the bilingual release's bar (same ZH 64px line above EN 44px, text spread across the 220px bar) — a regressed ASS (text squeezed to one band, bar looking emptier) survived a content-only gate before and shipped. The mechanical form: diff the `Style:` lines of `subtitle/<name>.bilingual.bar.ass` and `<output-root>/dubbed/_full/burn.ass` — they must be identical (both are bar-mode ASS from subtitles.py's defaults).
 
-Done when `cooked/<name>.dubbed.mp4` exists, duration matches the new timeline ±0.5s, a spot-check frame at a speaking timestamp shows bilingual subtitles rendered in the bottom bar (EN above ZH), **and** the quality gate above has cleared.
+Done when `cooked/<name>.dubbed.mp4` exists, duration matches the new timeline ±0.5s, a spot-check frame at a speaking timestamp shows bilingual subtitles rendered in the bottom bar (ZH above EN), **and** the quality gate above has cleared, **and** the `Style:` lines of `subtitle/<name>.bilingual.bar.ass` and `dubbed/_full/burn.ass` are identical.
 
 ### Step 8 — Verify
 
