@@ -335,9 +335,9 @@ def stage_timeline(output_root, name: str):
 
 # ===== Stage 3: video segments + minterpolate =====
 
-# A sub-frame original span (< one source frame at 24-30fps) has no real
-# footage to stretch: ffmpeg's frame duplication under setpts lands far off
-# the planned duration no matter the retry count (the 41-segment incident).
+# A span shorter than ~2 source frames has no real footage to stretch:
+# ffmpeg's frame duplication under setpts lands far off the planned duration
+# no matter the retry count (the 41-segment incident).
 _FRAME_MIN_DUR = 0.045
 
 
@@ -497,6 +497,16 @@ def stage_burn(output_root, name: str, keep_subs: bool = False):
     p = _paths(output_root, name)
     if not p["timeline_json"].exists():
         log("  ERROR: missing timeline.json"); sys.exit(1)
+    # Validate --keep-subs inputs BEFORE any ffmpeg work: 4a re-encodes the
+    # whole video and 4b reassembles dub.wav — minutes of work that would be
+    # wasted when the flag's inputs are missing. The bilingual SRT is checked
+    # too: the ASS rebuild (always-on) reads it.
+    if keep_subs:
+        for f in (p["dubbing_merged_srt"], p["work"] / "dubbing.en.merged.srt",
+                  p["work"] / "dubbing.bilingual.srt"):
+            if not f.exists():
+                log(f"  ERROR: --keep-subs needs {f} on disk; run a plain burn first")
+                sys.exit(1)
     with open(p["timeline_json"], encoding="utf-8") as f:
         data = json.load(f)
     timeline = data["timeline"]
@@ -650,11 +660,6 @@ def stage_burn(output_root, name: str, keep_subs: bool = False):
     # by shorten, not stored in any input file). The ASS is always rebuilt
     # from the on-disk bilingual SRT so style stays in sync with the pipeline.
     if keep_subs:
-        needed = [p["dubbing_merged_srt"], p["work"] / "dubbing.en.merged.srt"]
-        for f in needed:
-            if not f.exists():
-                log(f"  ERROR: --keep-subs needs {f} on disk; run a plain burn first")
-                sys.exit(1)
         log("  4c/4d: --keep-subs — reusing on-disk subtitle files (ass + burn only)")
     else:
         log("  4c: generate dubbing.srt + dubbing.en.srt")

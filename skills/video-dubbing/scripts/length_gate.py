@@ -4,15 +4,18 @@ Reads transcript/<name>.en.full.srt (cue windows) + transcript/translations_dub.
 (one Chinese line per cue) and flags, per cue:
 
   1. short-line trap: <= 8 syllables. IndexTTS2 renders standalone short
-     lines at narration pace (~2.6 syll/s vs 4.2-5.5 for normal lines) —
-     shorter is SLOWER. Rewrite fuller or let build_merge group it.
-  2. over-length: estimated speech duration exceeds the cue window by more
-     than the pipeline can absorb (cue stretch caps at 1.15x + gap bleed).
-     Chinese that runs >1.3x its English window is where frozen-frame
-     openings come from — compress the translation here, not in retime.
+     lines at narration pace (observed ~2.6 syll/s; est_duration plans at
+     ~3.0, rate_report's WARN boundary, vs 4.2-5.5 normal) — shorter is
+     SLOWER. Rewrite fuller or let build_merge group it.
+  2. over-length: estimated speech duration exceeds the cue's absorption
+     budget (1.15x stretch + 90% of the following pause). The excess becomes
+     a held frame — invisible below ~0.5s, a visible freeze beyond — so
+     over-long Chinese is where frozen openings come from. Compress the
+     translation here, not in retime.
 
 Syllable counting matches rate_report.py so the two tools speak one metric.
-Exit 0 = clean; exit 1 = flagged lines listed (fix them, rerun).
+Exit 0 = no short/must-fix lines (an advisory-only run also exits 0);
+exit 1 = short or must-fix lines listed (fix them, rerun).
 
 Usage: python length_gate.py <output_root> <name>
 Run AFTER writing translations_dub.txt and BEFORE build_merge / synth.
@@ -124,7 +127,7 @@ def main() -> None:
               "rewrite these lines, then rerun")
         sys.exit(1)
     print("length gate: advisory only (no must-fix, no short lines) — proceeding is "
-          "reasonable, but the listed freezes will be visible on screen")
+          "reasonable, but the reported freezes will be visible on screen")
     sys.exit(0)
 
 
