@@ -1,3 +1,5 @@
+# DEPRECATED — Part of the retired re-timing path (gap-absorbing cap for the string-of-pearls timeline). Kept for reference; not installed, not called.
+# See SKILL.md 'Reference' for the verdict.
 """Gap-absorbing timeline adjuster for the dub pipeline.
 
 Problem: slow-rendered short cues stretch their video segments during retime

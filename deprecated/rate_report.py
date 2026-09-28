@@ -1,3 +1,5 @@
+# DEPRECATED — Per-cue rate report for the retired re-timing path. Kept for reference; not installed, not called.
+# See SKILL.md 'Reference' for the verdict.
 """Speech-rate report for the dub pipeline (post-synth audio gate).
 
 IndexTTS2 renders standalone short lines at narration pace regardless of the
