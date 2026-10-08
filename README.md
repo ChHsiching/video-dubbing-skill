@@ -1,12 +1,12 @@
 # video-dubbing
 
-A skill that replaces a video's original English vocals with **Chinese voiceover cloned from the original speaker**, then **re-times the video** so the picture stays in sync with the Chinese. The result is a second release — same picture, Chinese audio, bilingual ZH+EN subtitles burned in — sitting alongside the bilingual subtitled release from [`video-subtitle`](https://github.com/ChHsiching/video-subtitle-skill).
+A skill that replaces a video's original English vocals with **Chinese voiceover cloned from the original speaker** on an **identity timeline** — the video is never re-timed, each cue's audio is fitted into its own original window (compressed when over, never stretched). The result is a second release — same picture, Chinese audio, bilingual ZH+EN subtitles burned in — sitting alongside the bilingual subtitled release from [`video-subtitle`](https://github.com/ChHsiching/video-subtitle-skill).
 
 Built and tested on a CPU-only Windows machine.
 
 ## Why
 
-A subtitled release is the primary product, but some audiences want a Chinese-narrated version they can listen to without reading. Voice-cloning the original speaker (rather than a generic TTS voice) preserves the speaker's timbre and prosody, so the dub feels like the same person speaking Chinese. The video is re-timed to the Chinese audio — never the other way around — because stretched TTS audio sounds unnatural while re-timed video is barely noticeable.
+A subtitled release is the primary product, but some audiences want a Chinese-narrated version they can listen to without reading. Voice-cloning the original speaker (rather than a generic TTS voice) preserves the speaker's timbre and prosody, so the dub feels like the same person speaking Chinese. The video keeps its original timing: over-window audio is gently compressed, and short audio keeps its natural pace with a breathing pause — time-stretching TTS to fill a window sounds robotic and is forbidden.
 
 This skill is **additive**: it reads the bilingual release that `video-subtitle` produced and writes to a separate `dubbed/` stage folder plus `cooked/<name>.dubbed.mp4`. It does not modify anything `video-subtitle` produced, so a dub failure never blocks the bilingual release.
 
@@ -29,7 +29,7 @@ Or run the full download → subtitle → dub chain in one command via the [`vid
 
 > /video-cooking <URL> （连中配一起做）
 
-Note: the dub is slow on CPU — IndexTTS2 synthesis plus frame interpolation for re-timing runs for hours. The agent will tell you when the long steps are happening.
+Note: the dub is slow on CPU — IndexTTS2 synthesis runs for hours (~3.5 min per cue). The agent will tell you when the long steps are happening. The agent will tell you when the long steps are happening.
 
 ## How it works
 

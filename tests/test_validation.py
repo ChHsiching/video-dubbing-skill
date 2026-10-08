@@ -37,10 +37,12 @@ class TestAssembleMath:
         assert full_dub.cue_window(cues, 0, 100.0) == 90.0
 
     def test_fit_factor_lands_audio_in_window(self):
+        # factor > 1 (audio over window) -> atempo compresses into the window.
+        # factor <= 1 is NOT a stretch order: stage_assemble skips those and
+        # pads with silence — short audio keeps its natural pace (stretching
+        # shipped and was rejected as robotic; SKILL.md Step 5).
         assert abs(full_dub.fit_factor(6.0, 5.0) - 1.2) < 1e-9
         assert full_dub.fit_factor(5.0, 5.0) == 1.0
-        # faster-than-window audio is slowed down (factor < 1) — the window
-        # fills either way; the budget, not the synth, sets the target
         assert abs(full_dub.fit_factor(4.0, 5.0) - 0.8) < 1e-9
 
     def test_fit_factor_zero_window_is_noop(self):
@@ -50,6 +52,27 @@ class TestAssembleMath:
         assert full_dub.clamp_factor(9.0) == 2.0
         assert full_dub.clamp_factor(0.1) == 0.5
         assert full_dub.clamp_factor(1.2) == 1.2
+
+
+class TestSplitChunks:
+    """Long-line collapse guard: cues over CHUNK_ON chars are synthesized as
+    sentence chunks (paired with the short-line trap — the healthy band runs
+    roughly 10-60 chars; merge short up, chunk long down)."""
+
+    def test_sentence_punctuation_splits_and_merges(self):
+        text = "第一句到这里。第二句也到这里。第三句短点。"
+        chunks = full_dub.split_chunks(text, chunk_max=15)
+        assert all(len(c) <= 15 for c in chunks)
+        assert "".join(chunks) == text  # lossless reassembly
+
+    def test_no_punctuation_hard_splits_at_comma(self):
+        text = "没有句号的长文本，靠逗号来切，再长一点也要切，确保块不超限。"
+        chunks = full_dub.split_chunks(text, chunk_max=10)
+        assert all(len(c) <= 10 + 20 for c in chunks)
+        assert "".join(chunks) == text
+
+    def test_short_text_unchanged(self):
+        assert full_dub.split_chunks("短句。") == ["短句。"]
 
 
 # ---------- length_gate (pre-synth syllable + coverage gate) ----------
