@@ -192,7 +192,9 @@ cook dub assemble <output-root> <name> --python <indextts-venv>/Scripts/python.e
 cook dub assemble <output-root> <name> --python <indextts-venv>/Scripts/python.exe --keep-subs
 ```
 
-One command, six moves (each logged with its `2a`-`2f` step letter):
+One command, seven moves (each logged with its step letter) — the seventh is **retime**, on by default since cook's 2026-10 reflux:
+
+- **Retime — subtitles follow the voice, not the window.** After the biliteral union and before the ASS build, `cook dub retime` runs in-process: faster-whisper word timestamps on each clean `_audio_pad/cue_NNNN.wav` (NOT the BGM-mixed dub.wav — mixed-track ASR timestamps run 1-3.5s late, and whisperX CTC char alignment drifts on trailing silence; both shipped wrong timings) map each display cue's first character to its spoken moment (anchor −0.05s), dwell cues inherit the previous start, ends hand over exactly (`end == next start` — a 20ms gap blanks one frame at 30fps, visible as a blink), and centisecond-carry rounding is pre-trimmed. JSON reports `retime: applied|degraded|skipped`. `--no-retime` reverts to the old proportional spread (long cues drift seconds late); a missing faster-whisper degrades with an explicit WARNING.
 
 - **Fit pass — compress only, never stretch.** Audio that runs past its window (cue start → next cue's start) is atempo'd down to fit; audio shorter than its window keeps its natural pace and the window gets a breathing pause (2b pads the tail with silence). Time-stretching short audio to fill a window is forbidden — slowed TTS reads as robotic, and stretch-to-fill shipped and was rejected three runs running before this rule landed. A compression factor over 1.5 logs a **budget-miss warning naming the cue** — the fix is editing that sentence and re-synthesizing that cue — never re-timing the video instead (why: **[REFERENCE.md → "The retired re-timing path"](REFERENCE.md)**).
 - **Place** — cues at their original starts, silence in between; `dub.wav` comes out exactly the raw duration (asserted; the stage aborts rather than emit a different-length track).
