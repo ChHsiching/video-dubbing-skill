@@ -34,7 +34,7 @@ torch.set_num_interop_threads(1)
 from indextts.infer_v2_5 import IndexTTS2
 ```
 
-**Order matters**: the env vars must be set before any numerical library imports. Setting them after torch loads has no effect. Every script in `scripts/` does this at the top.
+**Order matters**: the env vars must be set before any numerical library imports. Setting them after torch loads has no effect. cook's stage code does this at the top.
 
 Cost: RTF jumps from ~5 (multi-thread, broken) to ~30-36 (single-thread, correct). A 141-cue video takes ~8 hours on a Ryzen CPU (~3.5 min per cue — see SKILL.md Step 4 for the per-cue cost model). This is unavoidable — there is no "fast and correct" mode.
 
