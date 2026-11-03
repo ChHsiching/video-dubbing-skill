@@ -113,30 +113,29 @@ cook dub scan-reference <output-root> <name> \
     [--full-band] [--python <indextts-venv>/Scripts/python.exe]
 ```
 
-It ranks fixed 15s windows by syllable rate (density- and pause-filtered) and cuts the top 3 candidates (plus full-band 48k copies with `--full-band`). Density is only half the story — IndexTTS2 clones the window's prosody too, so rank candidates by **liveliness** as well: pyin F0 std and semitone range per window (a flat window dubs flat; use `librosa.pyin`, NOT `detect_pitch_frequency`, which reports voicing on silence). But liveliness is a ranking input, not the target: **the window's emotion clones to every line that speaker gets** — a peak-excitement window (banter, laughter) dubs the entire role as laughing (shipped once, rejected on the spot). Pick candidate windows from the register the speaker mostly holds (a calm interview question beats the joke segment for an interviewer), letting liveliness rank within that register. **Reuse ruling: a previous run's reference is the fallback, not the default** — scan THIS run's audio and audition its candidates every time; a prior winner may be reused only when this-run candidates lose the user's ear. Recording conditions and separation quality shift per episode, and a stale winner ships a degraded voice nobody auditioned. Authenticate any legacy reference file before reusing it: a reprocessed derivative keeps its speaker embedding and pitch statistics but loses waveform correlation, so correlation near zero does NOT mean "different speaker" — score it against an anchor clip with `cook dub scan-reference --score <file> --anchor <anchor.wav>` (same-speaker real audio lands near 0.94; synthesized takes 0.66-0.76 is the normal band) and compare pyin stats. Either way: **the user's ear picks the reference, always** — synthesize the pilot sentences once per candidate (Step 3a), prescreen each take with a small-model ASR round-trip (dropped words flag garble; traditional-Chinese output flags an accent the window bleeds into the take), score with `cook dub scan-reference --score`, then hand the loudness-matched wavs to the user **stating the cloning consequence**: they are choosing delivery and emotion, not just timbre.
+It ranks fixed 15s windows by syllable rate (density- and pause-filtered) and cuts the top 3 candidates (plus full-band 48k copies with `--full-band`). Density is only half the story — IndexTTS2 clones the window's prosody too, so rank candidates by **liveliness** as well: pyin F0 std and semitone range per window (a flat window dubs flat; use `librosa.pyin`, NOT `detect_pitch_frequency`, which reports voicing on silence). But liveliness is a ranking input, not the target: **the window's emotion clones to every line that speaker gets** — a peak-excitement window (banter, laughter) dubs the entire role as laughing (shipped once, rejected on the spot). Pick candidate windows from the register the speaker mostly holds (a calm interview question beats the joke segment for an interviewer), letting liveliness rank within that register. **Reuse ruling: a previous run's reference is the fallback, not the default.** Scan THIS run's audio and audition its candidates every time; a prior winner may be reused only when this-run candidates lose the user's ear. Recording conditions and separation quality shift per episode, and a stale winner ships a degraded voice nobody auditioned. Authenticate any legacy reference file before reusing it: a reprocessed derivative keeps its speaker embedding and pitch statistics but loses waveform correlation, so correlation near zero does NOT mean "different speaker" — score it against an anchor clip with `cook dub scan-reference --score <file> --anchor <anchor.wav>` (same-speaker real audio lands near 0.94; synthesized takes 0.66-0.76 is the normal band) and compare pyin stats. Either way: **the user's ear picks the reference, always** — synthesize the pilot sentences once per candidate (Step 3a), prescreen each take with a small-model ASR round-trip (dropped words flag garble; traditional-Chinese output flags an accent the window bleeds into the take), score with `cook dub scan-reference --score`, then hand the loudness-matched wavs to the user **stating the cloning consequence**: they are choosing delivery and emotion, not just timbre.
 
 Done when `dubbed/_reference/ref.wav` exists, is 14-30s, and has no silence gap > 0.3s (`ffmpeg -af silencedetect`).
 
 ### Step 3 — Translate for dubbing (the agent does this)
 
-**Rate-lock order (hard — translation written before the rate is a draft,
+**Rate-lock order (hard: translation written before the rate is a draft,
 not a script).** The locked sequence is:
 
 1. Ear gate locks BOTH speakers' final reference clips (Step 2/3a).
 2. `cook dub measure-rate --write dubbed/_reference/rate.json` on the
-   WINNING pilot takes — per speaker when speakers.txt exists. The sidecar
-   carries the provenance: rates + duration_factor + ref md5s.
+   WINNING pilot takes, per speaker when speakers.txt exists. The sidecar
+   carries the provenance: rates, duration_factor, ref md5s.
 3. Translate to budget (below), against the sidecar's rates.
-4. `cook dub gate <output_root> <name> --rate-file dubbed/_reference/rate.json`
-   — the gate computes each cue's budget from the transcript windows and
+4. `cook dub gate <output_root> <name> --rate-file dubbed/_reference/rate.json`.
+   The gate computes each cue's budget from the transcript windows and
    the sidecar rates, shaves the breathing reserve, and checks every line
    and the coverage total. A typed `--rate` needs `--rate-override`.
 5. Only now synthesize (Step 4).
 
 A translation drafted before step 2 must be re-gated against the measured
-rates — and re-written wherever the measured budget says so. An assumed
-rate is not a smaller sin here: it passes every line check and still dubs
-to dead air.
+rates, and re-written wherever the measured budget says so. An assumed
+rate passes every line check and still dubs to dead air.
 
 This is where dubbing diverges from subtitles. **Do not use `translations.txt`** (the subtitle translation) — it follows whisperX's fragment cuts, which split sentences. Dubbing needs **complete sentences** so the Chinese flows naturally when spoken.
 
@@ -198,11 +197,9 @@ Done when `*.v1` backups exist (when merging ran), line count equals cue count p
 
 ### Step 4 — Synthesize the Chinese dub (the slow step)
 
-**Use `cook dub synth` — do not hand-roll worker scripts.** It already has
-band-split multi-worker (`--workers/--stagger`), `DUB_DURATION_FACTOR`,
-two-voice `speakers.txt`, skip-if-exists resume, and atomic publish. Every
-run-local "adapted from last run's worker" script is a fork of this stage
-that the fixes below will never reach.
+**Use `cook dub synth`; do not hand-roll worker scripts.** It already
+ships everything a run-local worker reinvents (see the flags below).
+Every adapted copy is a fork this document's fixes never reach.
 
 ```
 cook dub synth <output-root> <name> --python <indextts-venv>/Scripts/python.exe \
